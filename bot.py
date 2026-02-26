@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart
 
-BOT_TOKEN = os.getenv("8725860151:AAHDj08Qliubsvs2rLVrWxY3v_BewzLkVYQ")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 def main_keyboard():
     return ReplyKeyboardMarkup(
@@ -44,3 +44,4 @@ async def main():
 if __name__ == "__main__":
 
     asyncio.run(main())
+
