@@ -1,215 +1,264 @@
-import asyncio
 import os
-from typing import Optional, Tuple
-
+import asyncio
 import asyncpg
 from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-
-# ---------- ТЕКСТЫ (тут меняешь под себя) ----------
-HOME_TEXT_TEMPLATE = """✋🏻 Здравствуй! Кавалер 🎩
-👑Вы находитесь в Cavalier Shop👑
-
-✍🏻Кратко о нашем сервисе
-
-°Готовые позиции
-°Горячие позиции
-°Превосходное качество товара
-°ОПТ
-°Разновидные способы оплаты
-°Отправки NovaPost 🇺🇦
-°Оператор/Сапорт в сети 24/7
-
-Актуальные ссылки
-
-Бот :
-@CavalierShopBot
-
-💬Чат :
-https://t.me/+HvuVKZkR2-03MzBi
-
-🥇Отзывы :
-https://t.me/+HvuVKZkR2-03MzBi
-
-Оператор/Сапорт :
-https://t.me/mcdonald_support
-
-🏦Баланс : {balance}
-🛍️Количество заказов : {orders}
-"""
-
-PROFILE_TEXT_TEMPLATE = """👤 Профиль
-
-🏦 Баланс: {balance}
-🛍️ Количество заказов: {orders}
-"""
-
-HELP_TEXT = """💬 Помощь
-
-Если ты возник с проблемой, или есть какой либо вопрос, пиши Оператору/Сапорту :
-https://t.me/mcdonald_support
-"""
-
-WORK_TEXT = "X"  # <- тут потом заменишь на свой текст
+pool = None
 
 
-# ---------- КНОПКИ ----------
-def main_menu_kb() -> ReplyKeyboardMarkup:
+# ================= БАЗА =================
+
+async def init_db():
+    global pool
+    pool = await asyncpg.create_pool(DATABASE_URL)
+
+    async with pool.acquire() as conn:
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS users(
+            user_id BIGINT PRIMARY KEY,
+            balance NUMERIC(12,2) DEFAULT 0,
+            orders_count INTEGER DEFAULT 0
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS products(
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            price NUMERIC(12,2),
+            link TEXT
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS purchases(
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
+            product_name TEXT,
+            link TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        """)
+
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS promocodes(
+            code TEXT PRIMARY KEY,
+            amount NUMERIC(12,2),
+            is_active BOOLEAN DEFAULT TRUE
+        );
+        """)
+
+
+async def ensure_user(user_id):
+    async with pool.acquire() as conn:
+        await conn.execute("""
+        INSERT INTO users(user_id)
+        VALUES($1)
+        ON CONFLICT DO NOTHING;
+        """, user_id)
+
+
+async def get_user(user_id):
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
+
+
+# ================= КЛАВИАТУРЫ =================
+
+def start_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="ГЛАВНАЯ 🔘"), KeyboardButton(text="ПРОФИЛЬ 👤")],
             [KeyboardButton(text="ПОМОЩЬ 💬"), KeyboardButton(text="РАБОТА 💸")],
         ],
-        resize_keyboard=True,
-        input_field_placeholder="Выбирай кнопку ниже 👇",
+        resize_keyboard=True
     )
 
 
-def city_inline_kb() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Одесса ⚓", callback_data="city:odessa")
-    # Потом добавишь так же:
-    # kb.button(text="Киев 🏛", callback_data="city:kyiv")
-    kb.adjust(1)
-    return kb.as_markup()
+def main_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Одесса")],
+            [KeyboardButton(text="ГЛАВНАЯ 🔘"), KeyboardButton(text="ПРОФИЛЬ 👤")],
+            [KeyboardButton(text="ПОМОЩЬ 💬"), KeyboardButton(text="РАБОТА 💸")],
+        ],
+        resize_keyboard=True
+    )
 
 
-def profile_actions_inline_kb() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Пополнить баланс", callback_data="profile:topup")
-    kb.button(text="Активировать промокод", callback_data="profile:promo")
-    kb.button(text="История Покупок", callback_data="profile:history")
-    kb.adjust(1)
-    return kb.as_markup()
+def profile_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Пополнить баланс")],
+            [KeyboardButton(text="Активировать промокод")],
+            [KeyboardButton(text="История покупок")],
+            [KeyboardButton(text="ГЛАВНАЯ 🔘")]
+        ],
+        resize_keyboard=True
+    )
 
 
-# ---------- БАЗА (Postgres) ----------
-pool: Optional[asyncpg.Pool] = None
+# ================= ТЕКСТЫ =================
+
+async def start_message(message: Message):
+    await ensure_user(message.from_user.id)
+
+    text = (
+        "✋🏻 Здравствуй! Кавалер 🎩\n"
+        "👑Вы находитесь в Cavalier Shop👑\n\n"
+        "✍🏻Кратко о нашем сервисе\n\n"
+        "°Готовые позиции\n"
+        "°Горячие позиции\n"
+        "°Превосходное качество товара\n"
+        "°ОПТ\n"
+        "°Разновидные способы оплаты\n"
+        "°Отправки NovaPost 🇺🇦\n"
+        "°Оператор/Сапорт в сети 24/7\n\n"
+        "Оператор: @gskalye"
+    )
+
+    await message.answer(text, reply_markup=start_keyboard())
 
 
-async def db_init() -> None:
-    global pool
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not set in environment variables")
+async def main_message(message: Message):
+    user = await get_user(message.from_user.id)
 
-    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    text = (
+        f"🏦Баланс: {user['balance']}\n"
+        f"🛍️Количество заказов: {user['orders_count']}"
+    )
+
+    await message.answer(text, reply_markup=main_keyboard())
+
+
+async def profile_message(message: Message):
+    user = await get_user(message.from_user.id)
+
+    text = (
+        f"👤 Профиль\n\n"
+        f"🏦Баланс: {user['balance']}\n"
+        f"🛍️Количество заказов: {user['orders_count']}"
+    )
+
+    await message.answer(text, reply_markup=profile_keyboard())
+
+
+# ================= ПОКУПКА =================
+
+async def show_products(message: Message):
+    async with pool.acquire() as conn:
+        products = await conn.fetch("SELECT * FROM products")
+
+    if not products:
+        await message.answer("Пока нет товаров.")
+        return
+
+    text = "📦 Доступные позиции:\n\n"
+    for p in products:
+        text += f"{p['id']}. {p['name']} — {p['price']}\n"
+
+    text += "\nНапиши номер товара для покупки."
+
+    await message.answer(text)
+
+
+async def buy_product(message: Message):
+    if not message.text.isdigit():
+        return
+
+    product_id = int(message.text)
 
     async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                tg_id BIGINT PRIMARY KEY,
-                balance NUMERIC(12,2) NOT NULL DEFAULT 0,
-                orders_count INT NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-        """)
+        product = await conn.fetchrow("SELECT * FROM products WHERE id=$1", product_id)
 
+    if not product:
+        return
 
-async def get_or_create_user(tg_id: int) -> Tuple[str, int]:
-    # Возвращаем (balance_as_text, orders_count)
-    assert pool is not None
+    user = await get_user(message.from_user.id)
 
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT balance, orders_count FROM users WHERE tg_id=$1",
-            tg_id
-        )
-        if row is None:
-            await conn.execute(
-                "INSERT INTO users (tg_id) VALUES ($1)",
-                tg_id
-            )
-            return "0.00", 0
+    if user["balance"] < product["price"]:
+        await message.answer("❌ Недостаточно средств.")
+        return
 
-        balance = row["balance"]
-        orders = row["orders_count"]
-        # Приводим красиво к строке
-        return f"{float(balance):.2f}", int(orders)
-
-
-# На будущее (когда начнёшь менять баланс/заказы)
-async def add_balance(tg_id: int, amount: float) -> None:
-    assert pool is not None
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE users SET balance = balance + $1 WHERE tg_id=$2",
-            amount, tg_id
+            "UPDATE users SET balance=balance-$1, orders_count=orders_count+1 WHERE user_id=$2",
+            product["price"], message.from_user.id
         )
 
+        await conn.execute(
+            "INSERT INTO purchases(user_id, product_name, link) VALUES($1,$2,$3)",
+            message.from_user.id, product["name"], product["link"]
+        )
 
-async def inc_orders(tg_id: int) -> None:
-    assert pool is not None
+    await message.answer(f"✅ Покупка успешна!\nВот твоя ссылка:\n{product['link']}")
+
+
+# ================= ПРОМОКОД =================
+
+async def activate_promocode(message: Message):
+    code = message.text.strip()
+
+    async with pool.acquire() as conn:
+        promo = await conn.fetchrow("SELECT * FROM promocodes WHERE code=$1 AND is_active=TRUE", code)
+
+    if not promo:
+        await message.answer("❌ Промокод не найден.")
+        return
+
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE users SET orders_count = orders_count + 1 WHERE tg_id=$1",
-            tg_id
+            "UPDATE users SET balance=balance+$1 WHERE user_id=$2",
+            promo["amount"], message.from_user.id
+        )
+        await conn.execute(
+            "UPDATE promocodes SET is_active=FALSE WHERE code=$1",
+            code
         )
 
-
-# ---------- ХЭНДЛЕРЫ ----------
-async def send_home(message: Message) -> None:
-    balance, orders = await get_or_create_user(message.from_user.id)
-
-    # ВАЖНО: чтобы не “засорять” — можно отправлять новый экран,
-    # а старый пусть уходит вверх. Telegram “одним и тем же” сообщением
-    # без inline callback редактирования на /start не сделать.
-    text = HOME_TEXT_TEMPLATE.format(balance=balance, orders=orders)
-
-    await message.answer(
-        text,
-        reply_markup=main_menu_kb()
-    )
-    # Кнопка города — ПРИКРЕПЛЕНА К ОТДЕЛЬНОМУ СООБЩЕНИЮ?
-    # Ты просил прямо под основным текстом: это возможно только если
-    # inline-кнопки будут у этого же сообщения.
-    # Поэтому шлём одним сообщением:
-    await message.answer(
-        "⬇️",
-        reply_markup=city_inline_kb()
-    )
+    await message.answer(f"✅ Баланс пополнен на {promo['amount']}")
 
 
-async def profile(message: Message) -> None:
-    balance, orders = await get_or_create_user(message.from_user.id)
-    text = PROFILE_TEXT_TEMPLATE.format(balance=balance, orders=orders)
+# ================= ИСТОРИЯ =================
 
-    # Одним сообщением: текст + кнопки
-    await message.answer(text, reply_markup=profile_actions_inline_kb())
+async def show_history(message: Message):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM purchases WHERE user_id=$1 ORDER BY created_at DESC",
+            message.from_user.id
+        )
+
+    if not rows:
+        await message.answer("История пуста.")
+        return
+
+    text = "🧾 История покупок:\n\n"
+    for r in rows:
+        text += f"{r['product_name']}\n{r['link']}\n\n"
+
+    await message.answer(text)
 
 
-async def help_cmd(message: Message) -> None:
-    await message.answer(HELP_TEXT)
+# ================= ЗАПУСК =================
 
-
-async def work_cmd(message: Message) -> None:
-    await message.answer(WORK_TEXT)
-
-
-# Inline callbacks (пока заглушки)
-async def on_city_callback(callback: Message):  # placeholder (aiogram uses CallbackQuery normally)
-    pass
-
-
-async def main() -> None:
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN is not set in environment variables")
-
-    await db_init()
+async def main():
+    await init_db()
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    dp.message.register(send_home, CommandStart())
-    dp.message.register(send_home, F.text == "ГЛАВНАЯ 🔘")
-    dp.message.register(profile, F.text == "ПРОФИЛЬ 👤")
-    dp.message.register(help_cmd, F.text == "ПОМОЩЬ 💬")
-    dp.message.register(work_cmd, F.text == "РАБОТА 💸")
+    dp.message.register(start_message, CommandStart())
+    dp.message.register(main_message, F.text == "ГЛАВНАЯ 🔘")
+    dp.message.register(profile_message, F.text == "ПРОФИЛЬ 👤")
+    dp.message.register(show_products, F.text == "Одесса")
+    dp.message.register(show_history, F.text == "История покупок")
+    dp.message.register(activate_promocode, F.text.startswith("PROMO_"))
+    dp.message.register(buy_product)
 
     await dp.start_polling(bot)
 
