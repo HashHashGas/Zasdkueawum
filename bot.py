@@ -4,83 +4,91 @@ import logging
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
-from aiogram.types import Message, CallbackQuery
-
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Railway -> Variables -> BOT_TOKEN = "xxx"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 
 # =========================
-# ТЕКСТЫ (МЕНЯЙ ТУТ)
+# ТЕКСТЫ
 # =========================
-HOME_TEXT = (
-    "✋🏻 Здравствуй! Кавалер 🎩\n"
-    "👑Вы находитесь в Cavalier Shop👑\n\n"
-    "✍🏻Кратко о нашем сервисе\n\n"
-    "°Готовые позиции\n"
-    "°Горячие позиции\n"
-    "°Превосходное качество товара\n"
-    "°ОПТ\n"
-    "°Разновидные способы оплаты\n"
-    "°Отправки NovaPost 🇺🇦\n"
-    "°Оператор/Сапорт в сети 24/7\n\n"
-    "Актуальные ссылки\n\n"
-    "Бот :\n"
-    "@CavalierShopBot\n\n"
-    "💬Чат :\n"
-    "https://t.me/+HvuVKZkR2-03MzBi\n\n"
-    "🥇Отзывы :\n"
-    "https://t.me/+HvuVKZkR2-03MzBi\n\n"
-    "Оператор/Сапорт :\n"
-    "https://t.me/mcdonald_support\n\n"
-    "🏦Баланс :\n"
-    "🛍️Количество заказов :\n"
-)
 
-PROFILE_TEXT = (
-    "👤 Профиль\n\n"
-    "🏦 Баланс:\n"
-    "—\n\n"
-    "🛍️ Количество заказов:\n"
-    "—\n"
-)
+HOME_TEXT = """✋🏻 Здравствуй! Кавалер 🎩
+👑Вы находитесь в Cavalier Shop👑
 
-HELP_TEXT = (
-    "Если ты возник с проблемой, или есть какой либо вопрос, пиши Оператору/Сапорту :\n"
-    "https://t.me/mcdonald_support"
-)
+✍🏻Кратко о нашем сервисе
 
-WORK_TEXT = "A"  # тут одна буква, как просил — потом заменишь
+°Готовые позиции
+°Горячие позиции
+°Превосходное качество товара
+°ОПТ
+°Разновидные способы оплаты
+°Отправки NovaPost 🇺🇦
+°Оператор/Сапорт в сети 24/7
+
+Актуальные ссылки
+
+Бот :
+@CavalierShopBot
+
+💬Чат :
+https://t.me/+HvuVKZkR2-03MzBi
+
+🥇Отзывы :
+https://t.me/+HvuVKZkR2-03MzBi
+
+Оператор/Сапорт :
+https://t.me/mcdonald_support
+
+🏦Баланс :
+🛍️Количество заказов :
+"""
+
+PROFILE_TEXT = """👤 Профиль
+
+🏦 Баланс:
+
+🛍️ Количество заказов:
+"""
+
+HELP_TEXT = """Если ты возник с проблемой, или есть какой либо вопрос, пиши Оператору/Сапорту :
+https://t.me/mcdonald_support
+"""
+
+WORK_TEXT = "A"  # заменишь потом
 
 
 # =========================
 # КЛАВИАТУРЫ
 # =========================
-def bottom_menu() -> ReplyKeyboardMarkup:
+
+def bottom_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="ГЛАВНАЯ 🔘"), KeyboardButton(text="ПРОФИЛЬ 👤")],
             [KeyboardButton(text="ПОМОЩЬ 💬"), KeyboardButton(text="РАБОТА 💸")],
         ],
-        resize_keyboard=True
+        resize_keyboard=True,
+        input_field_placeholder="Выбери раздел"
     )
 
 
-def home_inline() -> InlineKeyboardBuilder:
+def home_inline():
     kb = InlineKeyboardBuilder()
-    kb.button(text="Одесса ⚓️", callback_data="city:odessa")
-    # если потом захочешь добавить города — добавишь тут:
-    # kb.button(text="Киев 🏛", callback_data="city:kyiv")
+    kb.button(text="⚓ Одесса ⚓", callback_data="city:odessa")
     kb.adjust(1)
     return kb
 
 
-def profile_inline() -> InlineKeyboardBuilder:
+def profile_inline():
     kb = InlineKeyboardBuilder()
     kb.button(text="💳 Пополнить баланс", callback_data="profile:topup")
     kb.button(text="🎟 Активировать промокод", callback_data="profile:promo")
@@ -89,9 +97,8 @@ def profile_inline() -> InlineKeyboardBuilder:
     return kb
 
 
-def odessa_inline() -> InlineKeyboardBuilder:
+def odessa_inline():
     kb = InlineKeyboardBuilder()
-    # Заготовка под будущие товары/каталог/категории:
     kb.button(text="📦 Каталог", callback_data="odessa:catalog")
     kb.button(text="ℹ️ Информация", callback_data="odessa:info")
     kb.adjust(1)
@@ -99,9 +106,10 @@ def odessa_inline() -> InlineKeyboardBuilder:
 
 
 # =========================
-# ХЕЛПЕРЫ ОТПРАВКИ (чтобы не плодить сообщения)
+# ФУНКЦИИ
 # =========================
-async def send_home(message: Message) -> None:
+
+async def send_home(message: Message):
     await message.answer(
         HOME_TEXT,
         reply_markup=home_inline().as_markup(),
@@ -109,101 +117,85 @@ async def send_home(message: Message) -> None:
     )
 
 
-async def send_profile(message: Message) -> None:
+async def send_profile(message: Message):
     await message.answer(
         PROFILE_TEXT,
-        reply_markup=profile_inline().as_markup(),
-        disable_web_page_preview=True
+        reply_markup=profile_inline().as_markup()
     )
 
 
 # =========================
 # ХЕНДЛЕРЫ
 # =========================
-async def cmd_start(message: Message) -> None:
-    # 1 сообщение: текст + inline "Одесса"
-    await message.answer(" ", reply_markup=bottom_menu())  # просто выставляем нижнюю панель (без текста)
+
+async def cmd_start(message: Message):
+    # 1. Ставим нижнюю панель
+    await message.answer(
+        HOME_TEXT,
+        reply_markup=bottom_menu()
+    )
+
+    # 2. Отдельно отправляем inline Одесса (под текстом)
+    await message.answer(
+        " ",
+        reply_markup=home_inline().as_markup()
+    )
+
+
+async def btn_home(message: Message):
     await send_home(message)
 
 
-async def on_home_button(message: Message) -> None:
-    await send_home(message)
-
-
-async def on_profile_button(message: Message) -> None:
+async def btn_profile(message: Message):
     await send_profile(message)
 
 
-async def on_help_button(message: Message) -> None:
-    await message.answer(HELP_TEXT, disable_web_page_preview=True)
+async def btn_help(message: Message):
+    await message.answer(HELP_TEXT)
 
 
-async def on_work_button(message: Message) -> None:
+async def btn_work(message: Message):
     await message.answer(WORK_TEXT)
 
 
-# ===== INLINE callbacks =====
-async def on_city(callback: CallbackQuery) -> None:
+# ===== INLINE CALLBACKS =====
+
+async def city_handler(callback: CallbackQuery):
     await callback.answer()
-    city = callback.data.split(":", 1)[1]
-
-    if city == "odessa":
-        text = "Одесса ⚓️\n\nВыбери действие:"  # это НЕ отдельное сообщение “выбери город”, это ответ на нажатие
-        await callback.message.answer(text, reply_markup=odessa_inline().as_markup())
-    else:
-        await callback.message.answer("Город пока не настроен.")
+    await callback.message.answer(
+        "⚓ Одесса",
+        reply_markup=odessa_inline().as_markup()
+    )
 
 
-async def on_profile_actions(callback: CallbackQuery) -> None:
-    await callback.answer()
-    action = callback.data.split(":", 1)[1]
-
-    if action == "topup":
-        await callback.message.answer("💳 Пополнение баланса — скоро добавим.")
-    elif action == "promo":
-        await callback.message.answer("🎟 Промокоды — скоро добавим.")
-    elif action == "history":
-        await callback.message.answer("🧾 История покупок — скоро добавим.")
-    else:
-        await callback.message.answer("Неизвестное действие.")
+async def profile_actions(callback: CallbackQuery):
+    await callback.answer("Скоро добавим 🤝")
 
 
-async def on_odessa_actions(callback: CallbackQuery) -> None:
-    await callback.answer()
-    action = callback.data.split(":", 1)[1]
-
-    if action == "catalog":
-        await callback.message.answer("📦 Каталог — позже добавим категории/товары.")
-    elif action == "info":
-        await callback.message.answer("ℹ️ Информация — позже добавим текст.")
-    else:
-        await callback.message.answer("Неизвестное действие.")
+async def odessa_actions(callback: CallbackQuery):
+    await callback.answer("Скоро добавим 🤝")
 
 
-def ensure_token() -> str:
-    if not BOT_TOKEN or not isinstance(BOT_TOKEN, str) or len(BOT_TOKEN) < 10:
-        raise RuntimeError("BOT_TOKEN не найден. Railway -> Settings -> Shared Variables -> BOT_TOKEN")
-    return BOT_TOKEN
+# =========================
+# MAIN
+# =========================
 
+async def main():
+    if not BOT_TOKEN:
+        raise ValueError("Добавь BOT_TOKEN в Railway -> Variables")
 
-async def main() -> None:
-    token = ensure_token()
-    bot = Bot(token=token)
+    bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    # /start
     dp.message.register(cmd_start, CommandStart())
+    dp.message.register(btn_home, F.text == "ГЛАВНАЯ 🔘")
+    dp.message.register(btn_profile, F.text == "ПРОФИЛЬ 👤")
+    dp.message.register(btn_help, F.text == "ПОМОЩЬ 💬")
+    dp.message.register(btn_work, F.text == "РАБОТА 💸")
 
-    # нижняя панель
-    dp.message.register(on_home_button, F.text == "ГЛАВНАЯ 🔘")
-    dp.message.register(on_profile_button, F.text == "ПРОФИЛЬ 👤")
-    dp.message.register(on_help_button, F.text == "ПОМОЩЬ 💬")
-    dp.message.register(on_work_button, F.text == "РАБОТА 💸")
-
-    # inline callbacks
-    dp.callback_query.register(on_city, F.data.startswith("city:"))
-    dp.callback_query.register(on_profile_actions, F.data.startswith("profile:"))
-    dp.callback_query.register(on_odessa_actions, F.data.startswith("odessa:"))
+    dp.callback_query.register(city_handler, F.data.startswith("city:"))
+    dp.callback_query.register(profile_actions, F.data.startswith("profile:"))
+    dp.callback_query.register(odessa_actions, F.data.startswith("odessa:"))
 
     await dp.start_polling(bot)
 
