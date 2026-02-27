@@ -1,8 +1,6 @@
-import asyncio
 import os
-
+import asyncio
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -11,211 +9,204 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
-
-# =========================================================
-# 1) НАСТРОЙКИ
-# =========================================================
-# Railway / сервер: токен берём из переменных окружения
-# В Railway → Variables должен быть BOT_TOKEN = <твой токен>
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+from aiogram.filters import CommandStart
 
 
-# =========================================================
-# 2) ТЕКСТЫ (МЕНЯЙ ТУТ)
-# =========================================================
-START_TEXT = (
-    "— 🤗 Всем привет друзья !" 
-"— 🍟 Это ваш любимый Mc Donald !"
+# =========================
+# НАСТРОЙКИ (менять тут)
+# =========================
 
-"— 🥰 Мы рады предложить вам:"
+SUPPORT_LINK = "https://t.me/mcdonald_support"  # <-- оператор/сапорт
+CHAT_LINK = "https://t.me/+HvuVKZkR2-03MzBi"    # <-- чат
+REVIEWS_LINK = "https://t.me/+HvuVKZkR2-03MzBi" # <-- отзывы (пока как ты дал)
+BOT_USERNAME = "@CavalierShopBot"               # <-- ник бота
 
-"— 🍀 Высокое качество шишек"
-"— 💎 Готовые клады"  
-"— 💰 Горячие клады " 
-"— 🇺🇦 отправку по всей Украине"  
-"— 💳 Безопасные способы оплаты"
-"— 👨‍💼 Высокое качество обслуживание"  
+# Слово-замена вместо "Клад" (как просил)
+WORD_DROP_REPLACEMENT = "Вклады"  # можешь поменять на "Заказы" / "Пункты" / "Выдачи" и т.д.
 
-"— 🌐 Все актуальные ссылки:"
-    
-)
 
-ODESA_TEXT = (
-    "🏴‍☠️ ТЕКСТ ПРИ НАЖАТИИ «ОДЕССА»\n"
-    "Тут будет другой текст, который ты хочешь."
-)
+def get_start_text(balance: str = "—", orders: str = "—") -> str:
+    # Текст для /start и ГЛАВНАЯ 🔘 (одинаковый)
+    return (
+        "✋🏻 Здравствуй! Кавалер 🎩\n"
+        "👑Вы находитесь в Cavalier Shop👑\n\n"
+        "✍🏻Кратко о нашем сервисе\n\n"
+        f"°Готовые {WORD_DROP_REPLACEMENT}\n"
+        f"°Горячие {WORD_DROP_REPLACEMENT}\n"
+        "°Превосходное качество товара\n"
+        "°ОПТ\n"
+        "°Разновидные способы оплаты\n"
+        "°Отправки NovaPost 🇺🇦\n"
+        "°Оператор/Сапорт в сети 24/7\n\n"
+        "Актуальные ссылки\n\n"
+        "Бот :\n"
+        f"{BOT_USERNAME}\n\n"
+        "💬Чат :\n"
+        f"{CHAT_LINK}\n\n"
+        "🥇Отзывы :\n"
+        f"{REVIEWS_LINK}\n\n"
+        "Оператор/Сапорт :\n"
+        f"{SUPPORT_LINK}\n\n"
+        "🏦Баланс :\n"
+        f"{balance}\n"
+        "🛍️Количество заказов :\n"
+        f"{orders}"
+    )
 
-MAIN_TEXT = (
-    "🔘 ТЕКСТ ВКЛАДКИ «ГЛАВНАЯ»\n"
-    "Сюда можешь поставить то же, что и START_TEXT — или другой."
-)
 
 PROFILE_TEXT = (
-    "👤 ТЕКСТ ВКЛАДКИ «ПРОФИЛЬ»\n"
-    "Например: баланс, статус, и т.д."
+    "👤 Профиль\n\n"
+    "🏦 Баланс:\n"
+    "—\n\n"
+    "🛍️ Количество заказов:\n"
+    "—"
 )
 
 HELP_TEXT = (
-    "💬 ТЕКСТ ВКЛАДКИ «ПОМОЩЬ»\n"
-    "Тут твои правила, FAQ, контакты."
+    "💬 Помощь\n\n"
+    "Если ты возник с проблемой, или есть какой либо вопрос, пиши Оператору/Сапорту :\n"
+    f"{SUPPORT_LINK}"
 )
 
-WORK_TEXT = (
-    "💸 ТЕКСТ ВКЛАДКИ «РАБОТА»\n"
-    "Тут твой текст."
-)
+WORK_TEXT = "A"  # <-- ты заменишь на свой текст
 
 
-# =========================================================
-# 3) КНОПКИ (НИЖНЯЯ ПАНЕЛЬ)
-# =========================================================
-BTN_MAIN = "ГЛАВНАЯ 🔘"
-BTN_PROFILE = "ПРОФИЛЬ 👤"
-BTN_HELP = "ПОМОЩЬ 💬"
-BTN_WORK = "РАБОТА 💸"
+# =========================
+# КНОПКИ
+# =========================
 
-def main_reply_keyboard() -> ReplyKeyboardMarkup:
-    # Нижняя панель (ReplyKeyboard)
+def bottom_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_MAIN), KeyboardButton(text=BTN_PROFILE)],
-            [KeyboardButton(text=BTN_HELP), KeyboardButton(text=BTN_WORK)],
+            [KeyboardButton(text="ГЛАВНАЯ 🔘"), KeyboardButton(text="ПРОФИЛЬ 👤")],
+            [KeyboardButton(text="ПОМОЩЬ 💬"), KeyboardButton(text="РАБОТА 💸")],
         ],
         resize_keyboard=True,
     )
 
 
-# =========================================================
-# 4) INLINE КНОПКИ
-# =========================================================
-def start_inline_keyboard() -> InlineKeyboardMarkup:
-    # Кнопка под старт-текстом
+def main_inline() -> InlineKeyboardMarkup:
+    # Кнопка под главным сообщением
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Одесса", callback_data="city:odesa")]
-        ]
-    )
-
-def odesa_inline_keyboard() -> InlineKeyboardMarkup:
-    # Кнопки, которые появляются после нажатия "Одесса"
-    # =========================================================
-    # МЕНЯЙ ТУТ количество / названия
-    # Просто добавляй/удаляй строки InlineKeyboardButton(...)
-    # =========================================================
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Панелька 1", callback_data="odesa:panel1")],
-            [InlineKeyboardButton(text="Панелька 2", callback_data="odesa:panel2")],
-            [InlineKeyboardButton(text="Панелька 3", callback_data="odesa:panel3")],
-        ]
-    )
-
-def profile_inline_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Пополнить баланс", callback_data="profile:topup")],
-            [InlineKeyboardButton(text="Активировать промокод", callback_data="profile:promo")],
-            [InlineKeyboardButton(text="История Покупок", callback_data="profile:history")],
+            [InlineKeyboardButton(text="Одесса ⚓", callback_data="city:odessa")]
         ]
     )
 
 
-# =========================================================
-# 5) ЛОГИКА ЭКРАНОВ
-# =========================================================
-async def show_main(message: Message):
-    # Главная = /start по функциям
-    await message.answer(
-        MAIN_TEXT,
-        reply_markup=main_reply_keyboard(),
-    )
-    await message.answer(
-        START_TEXT,
-        reply_markup=start_inline_keyboard(),
-    )
+def odessa_inline() -> InlineKeyboardMarkup:
+    # Кнопки внутри "Одесса" (легко расширять)
+    buttons = [
+        [InlineKeyboardButton(text="📦 Каталог", callback_data="odessa:catalog")],
+        [InlineKeyboardButton(text="ℹ️ Инфо", callback_data="odessa:info")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back:home")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-async def start_cmd(message: Message):
-    await message.answer(
-        START_TEXT,
-        reply_markup=main_reply_keyboard(),
-    )
-    await message.answer(
-        "⬇️ Выбери город:",
-        reply_markup=start_inline_keyboard(),
+
+def profile_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile:topup")],
+            [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="profile:promo")],
+            [InlineKeyboardButton(text="🧾 История Покупок", callback_data="profile:history")],
+        ]
     )
 
-async def main_btn(message: Message):
-    await show_main(message)
 
-async def profile_btn(message: Message):
-    await message.answer(PROFILE_TEXT, reply_markup=main_reply_keyboard())
-    await message.answer("Выбери действие 👇", reply_markup=profile_inline_keyboard())
+# =========================
+# ЛОГИКА
+# =========================
 
-async def help_btn(message: Message):
-    await message.answer(HELP_TEXT, reply_markup=main_reply_keyboard())
-
-async def work_btn(message: Message):
-    await message.answer(WORK_TEXT, reply_markup=main_reply_keyboard())
+def get_env_token() -> str:
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        raise RuntimeError("BOT_TOKEN не найден. Добавь переменную окружения BOT_TOKEN в Railway.")
+    return token
 
 
-# =========================================================
-# 6) CALLBACK (НАЖАТИЯ INLINE)
-# =========================================================
-async def on_city_odesa(call: CallbackQuery):
-    await call.answer()  # убирает "часики" на кнопке
-    await call.message.answer(ODESA_TEXT, reply_markup=odesa_inline_keyboard())
-
-# Заглушки для оdesa панелек
-async def on_odesa_panel(call: CallbackQuery):
-    await call.answer()
-    # =========================================================
-    # МЕНЯЙ ТУТ ответы для каждой панельки
-    # =========================================================
-    await call.message.answer(f"✅ Нажато: {call.data}")
-
-# Заглушки для профиля
-async def on_profile_action(call: CallbackQuery):
-    await call.answer()
-    if call.data == "profile:topup":
-        await call.message.answer("💳 Пополнение баланса — пока в разработке.")
-    elif call.data == "profile:promo":
-        await call.message.answer("🏷 Активировать промокод — пока в разработке.")
-    elif call.data == "profile:history":
-        await call.message.answer("🧾 История покупок — пока в разработке.")
-    else:
-        await call.message.answer("Пункт пока не настроен.")
+async def show_home(message: Message):
+    # Чтобы не засорять чат: если это /start — просто отправляем.
+    # Если это кнопка "ГЛАВНАЯ" — тоже отправим новым (Telegram не даёт редактировать чужие старые сообщения всегда).
+    text = get_start_text()
+    await message.answer(text, reply_markup=bottom_menu())
+    await message.answer("⬇️ Выбери город:", reply_markup=main_inline())
 
 
-# =========================================================
-# 7) MAIN
-# =========================================================
+@Dispatcher().message  # заглушка чтобы линтер не ругался (ни на что не влияет)
+async def _noop(_: Message):
+    pass
+
+
 async def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN не найден. Добавь BOT_TOKEN в Railway → Variables.")
-
-    bot = Bot(token=BOT_TOKEN)
+    bot = Bot(token=get_env_token())
     dp = Dispatcher()
 
     # /start
-    dp.message.register(start_cmd, CommandStart())
+    @dp.message(CommandStart())
+    async def cmd_start(message: Message):
+        # Одно основное + одна строка с inline (без «простыней» из разных сообщений)
+        text = get_start_text()
+        await message.answer(text, reply_markup=bottom_menu())
+        await message.answer("⬇️ Выбери город:", reply_markup=main_inline())
 
-    # Нижняя панель
-    dp.message.register(main_btn, F.text == BTN_MAIN)
-    dp.message.register(profile_btn, F.text == BTN_PROFILE)
-    dp.message.register(help_btn, F.text == BTN_HELP)
-    dp.message.register(work_btn, F.text == BTN_WORK)
+    # ГЛАВНАЯ (как /start)
+    @dp.message(F.text == "ГЛАВНАЯ 🔘")
+    async def btn_home(message: Message):
+        text = get_start_text()
+        await message.answer(text, reply_markup=bottom_menu())
+        await message.answer("⬇️ Выбери город:", reply_markup=main_inline())
 
-    # Inline callbacks
-    dp.callback_query.register(on_city_odesa, F.data == "city:odesa")
-    dp.callback_query.register(on_odesa_panel, F.data.startswith("odesa:"))
-    dp.callback_query.register(on_profile_action, F.data.startswith("profile:"))
+    # ПРОФИЛЬ
+    @dp.message(F.text == "ПРОФИЛЬ 👤")
+    async def btn_profile(message: Message):
+        await message.answer(PROFILE_TEXT, reply_markup=bottom_menu())
+        await message.answer("⬇️ Действия профиля:", reply_markup=profile_inline())
+
+    # ПОМОЩЬ
+    @dp.message(F.text == "ПОМОЩЬ 💬")
+    async def btn_help(message: Message):
+        await message.answer(HELP_TEXT, reply_markup=bottom_menu())
+
+    # РАБОТА
+    @dp.message(F.text == "РАБОТА 💸")
+    async def btn_work(message: Message):
+        await message.answer(WORK_TEXT, reply_markup=bottom_menu())
+
+    # Inline: Одесса
+    @dp.callback_query(F.data == "city:odessa")
+    async def cb_odessa(call: CallbackQuery):
+        await call.message.edit_text(
+            "⚓ Одесса\n\nВыбери раздел ниже:",
+            reply_markup=odessa_inline()
+        )
+        await call.answer()
+
+    # Inline: Назад на главную (возвращаем то же самое главное сообщение)
+    @dp.callback_query(F.data == "back:home")
+    async def cb_back_home(call: CallbackQuery):
+        await call.message.edit_text(
+            get_start_text(),
+            reply_markup=main_inline()
+        )
+        await call.answer()
+
+    # Odessa placeholders
+    @dp.callback_query(F.data == "odessa:catalog")
+    async def cb_odessa_catalog(call: CallbackQuery):
+        await call.answer("Каталог скоро будет 👀", show_alert=True)
+
+    @dp.callback_query(F.data == "odessa:info")
+    async def cb_odessa_info(call: CallbackQuery):
+        await call.answer("Инфо скоро добавим 🤝", show_alert=True)
+
+    # Profile placeholders
+    @dp.callback_query(F.data.startswith("profile:"))
+    async def cb_profile_any(call: CallbackQuery):
+        await call.answer("Скоро подключим 🧠", show_alert=True)
 
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
-
