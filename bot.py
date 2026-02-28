@@ -258,10 +258,11 @@ async def main():
     dp.message.register(show_products, F.text == "Одесса")
     dp.message.register(show_history, F.text == "История покупок")
     dp.message.register(activate_promocode, F.text.startswith("PROMO_"))
-    dp.message.register(buy_product)
+
 
     await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+
