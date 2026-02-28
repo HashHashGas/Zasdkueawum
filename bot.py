@@ -135,44 +135,29 @@ async def db_init() -> None:
         await con.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                balance NUMERIC(12,2) NOT NULL DEFAULT 0,
-                orders_count INT NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
+  user_id BIGINT PRIMARY KEY,
+  balance NUMERIC(12,2) NOT NULL DEFAULT 0,
+  orders_count INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
-            CREATE TABLE IF NOT EXISTS purchases (
-                id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                product_name TEXT NOT NULL,
-                price NUMERIC(12,2) NOT NULL,
-                link TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
+CREATE TABLE IF NOT EXISTS purchases (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  product_name TEXT NOT NULL,
+  price NUMERIC(12,2) NOT NULL,
+  link TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT purchases_user_fk
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
 
-            CREATE TABLE IF NOT EXISTS promo_codes (
-                code TEXT PRIMARY KEY,
-                amount NUMERIC(12,2) NOT NULL,
-                is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                uses_left INT NOT NULL DEFAULT 1,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS promo_activations (
-                id BIGSERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                code TEXT NOT NULL REFERENCES promo_codes(code),
-                activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE(user_id, code)
-            );
-
-            CREATE TABLE IF NOT EXISTS products (
-                id BIGSERIAL PRIMARY KEY,
-                city TEXT NOT NULL,
-                name TEXT NOT NULL,
-                price NUMERIC(12,2) NOT NULL,
-                is_active BOOLEAN NOT NULL DEFAULT TRUE
-            );
+CREATE TABLE IF NOT EXISTS promo_codes (
+  code TEXT PRIMARY KEY,
+  amount NUMERIC(12,2) NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
             """
         )
 
@@ -440,3 +425,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
