@@ -4,103 +4,36 @@ from decimal import Decimal
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.types import (
     Message, CallbackQuery,
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton
 )
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
 
-
-# =======================
-# ENV
-# =======================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-ADMIN_IDS = os.getenv("ADMIN_IDS", "").strip()  # пример: "123456789,987654321"
 
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is missing (set BOT_TOKEN in Variables)")
+    raise RuntimeError("BOT_TOKEN missing")
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is missing (add Postgres and set DATABASE_URL)")
+    raise RuntimeError("DATABASE_URL missing")
 
-ADMIN_SET = set()
-if ADMIN_IDS:
-    for x in ADMIN_IDS.split(","):
-        x = x.strip()
-        if x.isdigit():
-            ADMIN_SET.add(int(x))
-
-
-def is_admin(user_id: int) -> bool:
-    # Если ADMIN_IDS не задан — считаем владельца админом (удобно на старте)
-    return (not ADMIN_SET) or (user_id in ADMIN_SET)
-
-
-# =======================
-# UI TEXTS
-# =======================
 BTN_MAIN = "ГЛАВНАЯ ⚪"
 BTN_PROFILE = "ПРОФИЛЬ 👤"
 BTN_HELP = "ПОМОЩЬ 💬"
 BTN_WORK = "РАБОТА 🛠️"
 
-OPERATOR_TAG = "@gskalye"
-CHAT_LINK = "https://t.me/+HvuVKZkR2-03MzBi"
-REVIEWS_LINK = "https://t.me/+HvuVKZkR2-03MzBi"
-BOT_TAG = "@CavalierShopBot"
+OPERATOR = "@gskalye"
 
-MAIN_TEXT_TEMPLATE = """✋🏻 Здравствуй! Кавалер 🎩
-👑Вы находитесь в Cavalier Shop👑
+pool: asyncpg.Pool | None = None
+bot_ref: Bot | None = None
 
-✍🏻Кратко о нашем сервисе
-
-°Готовые позиции
-°Горячие позиции
-°Превосходное качество товара
-°ОПТ
-°Разновидные способы оплаты
-°Отправки NovaPost 🇺🇦
-°Оператор/Сапорт в сети 24/7
-
-Актуальные ссылки
-
-Бот :
-{bot_tag}
-
-💬Чат :
-{chat_link}
-
-🥇Отзывы :
-{reviews_link}
-
-Оператор/Сапорт :
-{operator}
-
-🏦Баланс : <b>{balance}</b>
-🛍️Количество заказов : <b>{orders}</b>
-"""
-
-PROFILE_TEXT_TEMPLATE = """👤 Профиль
-
-🏦 Баланс: <b>{balance}</b>
-🛍️ Количество заказов: <b>{orders}</b>
-
-⬇️ Действия профиля:"""
-
-HELP_TEXT = f"""Если ты возник с проблемой, или есть какой либо вопрос, пиши Оператору/Сапорту:
-{OPERATOR_TAG}"""
-
-WORK_TEXT = "A"  # ты заменишь сам
+dp = Dispatcher()
 
 
-# =======================
-# KEYBOARDS
-# =======================
-def reply_menu() -> ReplyKeyboardMarkup:
+# ---------- UI ----------
+def reply_menu():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_MAIN), KeyboardButton(text=BTN_PROFILE)],
@@ -110,85 +43,57 @@ def reply_menu() -> ReplyKeyboardMarkup:
         is_persistent=True
     )
 
-
-def kb_main_inline_city() -> InlineKeyboardMarkup:
-    # /start НЕ показывает эту кнопку. Только "ГЛАВНАЯ"
+def kb_main_city():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Одесса ⚓", callback_data="city:odessa")]
     ])
 
-
-def kb_profile_actions() -> InlineKeyboardMarkup:
+def kb_profile():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile:topup")],
-        [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="profile:promocode")],
-        [InlineKeyboardButton(text="🧾 История покупок", callback_data="profile:history")],
+        [InlineKeyboardButton(text="💳 Top up", callback_data="profile:topup")],
+        [InlineKeyboardButton(text="🎟 Promo", callback_data="profile:promo")],
+        [InlineKeyboardButton(text="🧾 History", callback_data="profile:history")],
+    ])
+
+def kb_odessa_items():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="1) Item 1", callback_data="item:i1")],
+        [InlineKeyboardButton(text="2) Item 2", callback_data="item:i2")],
+        [InlineKeyboardButton(text="3) Item 3", callback_data="item:i3")],
+    ])
+
+def kb_buy(code: str):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Buy", callback_data=f"buy:{code}")],
+        [InlineKeyboardButton(text="⬅️ Back", callback_data="city:odessa")],
     ])
 
 
-def kb_city_products(city: str, items: list[tuple[str, str]]) -> InlineKeyboardMarkup:
-    # items: [(button_text, product_code), ...]
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=txt, callback_data=f"product:{city}:{code}")]
-        for (txt, code) in items
-    ])
-
-
-def kb_product_buy(product_code: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Купить", callback_data=f"buy:{product_code}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="city:odessa")],
-    ])
-
-
-def kb_back_to_profile() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад в профиль", callback_data="profile:open")]
-    ])
-
-
-# =======================
-# FSM
-# =======================
-class PromoStates(StatesGroup):
-    waiting_code = State()
-
-
-# =======================
-# DB
-# =======================
-pool: asyncpg.Pool | None = None
-bot_ref: Bot | None = None
-
-
-async def db_init() -> None:
+# ---------- DB ----------
+async def db_init():
     global pool
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
-
     async with pool.acquire() as con:
         await con.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
             balance NUMERIC(12,2) NOT NULL DEFAULT 0,
             orders_count INT NOT NULL DEFAULT 0,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            awaiting_promo BOOLEAN NOT NULL DEFAULT FALSE,
             main_chat_id BIGINT,
             main_message_id BIGINT,
             profile_chat_id BIGINT,
-            profile_message_id BIGINT
+            profile_message_id BIGINT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS products (
-            id BIGSERIAL PRIMARY KEY,
-            city TEXT NOT NULL,
-            code TEXT NOT NULL UNIQUE,
-            button_text TEXT NOT NULL,
+            code TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             price NUMERIC(12,2) NOT NULL,
-            description TEXT NOT NULL,
+            info TEXT NOT NULL,
             link TEXT NOT NULL,
-            is_active BOOLEAN NOT NULL DEFAULT TRUE,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            is_active BOOLEAN NOT NULL DEFAULT TRUE
         );
 
         CREATE TABLE IF NOT EXISTS purchases (
@@ -219,149 +124,107 @@ async def db_init() -> None:
         );
         """)
 
-        # Если товаров нет — добавим 3 демо позиции (легальные/универсальные)
-        cnt = await con.fetchval("SELECT COUNT(*) FROM products;")
-        if int(cnt) == 0:
+        # default products if empty
+        c = await con.fetchval("SELECT COUNT(*) FROM products")
+        if int(c) == 0:
             defaults = [
-                ("odessa", "pos1", "1) Position 1", "Position 1", Decimal("100.00"), "Описание позиции 1 (замени под себя)", "https://example.com/pos1"),
-                ("odessa", "pos2", "2) Position 2", "Position 2", Decimal("150.00"), "Описание позиции 2 (замени под себя)", "https://example.com/pos2"),
-                ("odessa", "pos3", "3) Position 3", "Position 3", Decimal("200.00"), "Описание позиции 3 (замени под себя)", "https://example.com/pos3"),
+                ("i1", "Item 1", Decimal("100.00"), "Info for Item 1", "https://example.com/i1"),
+                ("i2", "Item 2", Decimal("150.00"), "Info for Item 2", "https://example.com/i2"),
+                ("i3", "Item 3", Decimal("200.00"), "Info for Item 3", "https://example.com/i3"),
             ]
-            for city, code, btn, name, price, desc, link in defaults:
+            for code, name, price, info, link in defaults:
                 await con.execute(
-                    """
-                    INSERT INTO products (city, code, button_text, name, price, description, link, is_active)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)
-                    """,
-                    city, code, btn, name, price, desc, link
+                    "INSERT INTO products(code,name,price,info,link,is_active) VALUES($1,$2,$3,$4,$5,TRUE)",
+                    code, name, price, info, link
                 )
 
-
-async def ensure_user(user_id: int) -> None:
+async def ensure_user(uid: int):
     async with pool.acquire() as con:
         await con.execute(
             "INSERT INTO users(user_id) VALUES($1) ON CONFLICT (user_id) DO NOTHING",
-            user_id
+            uid
         )
 
-
-async def get_user_stats(user_id: int) -> tuple[Decimal, int]:
-    await ensure_user(user_id)
+async def get_stats(uid: int):
+    await ensure_user(uid)
     async with pool.acquire() as con:
-        row = await con.fetchrow(
-            "SELECT balance, orders_count FROM users WHERE user_id=$1",
-            user_id
-        )
-    bal = Decimal(row["balance"]) if row else Decimal("0.00")
-    ords = int(row["orders_count"]) if row else 0
+        r = await con.fetchrow("SELECT balance, orders_count FROM users WHERE user_id=$1", uid)
+    bal = Decimal(r["balance"])
+    ords = int(r["orders_count"])
     return bal, ords
 
+async def set_refs(uid: int, kind: str, chat_id: int, msg_id: int):
+    colc = "main_chat_id" if kind == "main" else "profile_chat_id"
+    colm = "main_message_id" if kind == "main" else "profile_message_id"
+    async with pool.acquire() as con:
+        await con.execute(f"UPDATE users SET {colc}=$1, {colm}=$2 WHERE user_id=$3", chat_id, msg_id, uid)
 
-async def render_main_text(user_id: int) -> str:
-    bal, ords = await get_user_stats(user_id)
-    return MAIN_TEXT_TEMPLATE.format(
-        bot_tag=BOT_TAG,
-        chat_link=CHAT_LINK,
-        reviews_link=REVIEWS_LINK,
-        operator=OPERATOR_TAG,
-        balance=f"{bal:.2f}",
-        orders=ords
+async def render_main(uid: int):
+    bal, ords = await get_stats(uid)
+    return (
+        "✋🏻 Hello, Cavalier 🎩\n"
+        "👑 Cavalier Shop 👑\n\n"
+        f"🏦 Balance: <b>{bal:.2f}</b>\n"
+        f"🛍️ Orders: <b>{ords}</b>\n\n"
+        f"Support: {OPERATOR}"
     )
 
+async def render_profile(uid: int):
+    bal, ords = await get_stats(uid)
+    return (
+        "👤 Profile\n\n"
+        f"🏦 Balance: <b>{bal:.2f}</b>\n"
+        f"🛍️ Orders: <b>{ords}</b>"
+    )
 
-async def save_refs(user_id: int, kind: str, chat_id: int, message_id: int) -> None:
-    col_chat = "main_chat_id" if kind == "main" else "profile_chat_id"
-    col_msg = "main_message_id" if kind == "main" else "profile_message_id"
-    async with pool.acquire() as con:
-        await con.execute(
-            f"UPDATE users SET {col_chat}=$1, {col_msg}=$2 WHERE user_id=$3",
-            chat_id, message_id, user_id
-        )
-
-
-async def refresh_main_message(user_id: int) -> None:
+async def refresh_saved(uid: int, which: str):
     if bot_ref is None:
         return
     async with pool.acquire() as con:
-        row = await con.fetchrow(
-            "SELECT main_chat_id, main_message_id FROM users WHERE user_id=$1",
-            user_id
+        r = await con.fetchrow(
+            "SELECT main_chat_id,main_message_id,profile_chat_id,profile_message_id FROM users WHERE user_id=$1",
+            uid
         )
-    if not row or not row["main_chat_id"] or not row["main_message_id"]:
+    if not r:
         return
-    try:
-        await bot_ref.edit_message_text(
-            chat_id=int(row["main_chat_id"]),
-            message_id=int(row["main_message_id"]),
-            text=await render_main_text(user_id),
-            reply_markup=kb_main_inline_city(),
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
-    except Exception:
-        pass
+
+    if which == "main" and r["main_chat_id"] and r["main_message_id"]:
+        try:
+            await bot_ref.edit_message_text(
+                chat_id=int(r["main_chat_id"]),
+                message_id=int(r["main_message_id"]),
+                text=await render_main(uid),
+                reply_markup=kb_main_city(),
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+        except Exception:
+            pass
+
+    if which == "profile" and r["profile_chat_id"] and r["profile_message_id"]:
+        try:
+            await bot_ref.edit_message_text(
+                chat_id=int(r["profile_chat_id"]),
+                message_id=int(r["profile_message_id"]),
+                text=await render_profile(uid),
+                reply_markup=kb_profile(),
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+        except Exception:
+            pass
 
 
-async def refresh_profile_message(user_id: int) -> None:
-    if bot_ref is None:
-        return
+# ---------- Promo (NO FSM) ----------
+async def promo_begin(uid: int):
+    await ensure_user(uid)
     async with pool.acquire() as con:
-        row = await con.fetchrow(
-            "SELECT profile_chat_id, profile_message_id FROM users WHERE user_id=$1",
-            user_id
-        )
-    if not row or not row["profile_chat_id"] or not row["profile_message_id"]:
-        return
-    bal, ords = await get_user_stats(user_id)
-    text = PROFILE_TEXT_TEMPLATE.format(balance=f"{bal:.2f}", orders=ords)
-    try:
-        await bot_ref.edit_message_text(
-            chat_id=int(row["profile_chat_id"]),
-            message_id=int(row["profile_message_id"]),
-            text=text,
-            reply_markup=kb_profile_actions(),
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
-    except Exception:
-        pass
+        await con.execute("UPDATE users SET awaiting_promo=TRUE WHERE user_id=$1", uid)
 
-
-async def get_city_buttons(city: str) -> list[tuple[str, str]]:
-    async with pool.acquire() as con:
-        rows = await con.fetch(
-            """
-            SELECT button_text, code
-            FROM products
-            WHERE city=$1 AND is_active=TRUE
-            ORDER BY id ASC
-            """,
-            city
-        )
-    return [(r["button_text"], r["code"]) for r in rows]
-
-
-async def get_product(code: str):
-    async with pool.acquire() as con:
-        return await con.fetchrow(
-            """
-            SELECT city, code, name, price, description, link
-            FROM products
-            WHERE code=$1 AND is_active=TRUE
-            """,
-            code
-        )
-
-
-# =======================
-# Promo apply (общая функция)
-# =======================
-async def promo_apply(user_id: int, code_in: str) -> tuple[bool, str]:
+async def promo_apply(uid: int, code_in: str):
     code_in = " ".join((code_in or "").strip().split())
     if not code_in:
-        return False, "❌ Пустой промокод."
-
-    await ensure_user(user_id)
+        return False, "Empty promo"
 
     async with pool.acquire() as con:
         async with con.transaction():
@@ -369,468 +232,193 @@ async def promo_apply(user_id: int, code_in: str) -> tuple[bool, str]:
                 """
                 SELECT code, amount, uses_left
                 FROM promo_codes
-                WHERE lower(code) = lower($1)
-                  AND is_active = TRUE
-                  AND uses_left > 0
+                WHERE lower(code)=lower($1) AND is_active=TRUE AND uses_left>0
                 FOR UPDATE
                 """,
                 code_in
             )
             if not row:
-                return False, "❌ Промокод недействителен или уже использован."
+                return False, "Invalid promo"
 
-            already = await con.fetchval(
+            used = await con.fetchval(
                 "SELECT 1 FROM promo_activations WHERE user_id=$1 AND code=$2",
-                user_id, row["code"]
+                uid, row["code"]
             )
-            if already:
-                return False, "❌ Вы уже активировали этот промокод."
+            if used:
+                return False, "Already used"
 
             amount = Decimal(row["amount"])
 
+            await con.execute("UPDATE users SET balance=balance+$1, awaiting_promo=FALSE WHERE user_id=$2", amount, uid)
+            await con.execute("UPDATE promo_codes SET uses_left=uses_left-1 WHERE code=$1", row["code"])
             await con.execute(
-                "UPDATE users SET balance = balance + $1 WHERE user_id=$2",
-                amount, user_id
+                "INSERT INTO promo_activations(user_id,code,amount) VALUES($1,$2,$3)",
+                uid, row["code"], amount
             )
-            await con.execute(
-                "UPDATE promo_codes SET uses_left = uses_left - 1 WHERE code=$1",
-                row["code"]
-            )
-            await con.execute(
-                "INSERT INTO promo_activations (user_id, code, amount) VALUES ($1,$2,$3)",
-                user_id, row["code"], amount
-            )
-
-    return True, f"✅ Промокод <b>{row['code']}</b> активирован!\n➕ Начислено: <b>{amount:.2f}</b>"
+    return True, f"Promo OK +{amount:.2f}"
 
 
-# =======================
-# Handlers
-# =======================
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
-
-
+# ---------- Handlers ----------
 @dp.message(CommandStart())
-async def cmd_start(message: Message):
-    # /start БЕЗ инлайн "Одесса"
+async def start(message: Message):
     await ensure_user(message.from_user.id)
     await message.answer(
-        await render_main_text(message.from_user.id),
+        await render_main(message.from_user.id),
         reply_markup=reply_menu(),
         parse_mode="HTML",
         disable_web_page_preview=True
     )
-
 
 @dp.message(F.text == BTN_MAIN)
-async def btn_main(message: Message):
-    # ГЛАВНАЯ с инлайн "Одесса" и запоминаем это сообщение для синхры
-    await ensure_user(message.from_user.id)
+async def on_main(message: Message):
     msg = await message.answer(
-        await render_main_text(message.from_user.id),
-        reply_markup=kb_main_inline_city(),
+        await render_main(message.from_user.id),
+        reply_markup=kb_main_city(),
         parse_mode="HTML",
         disable_web_page_preview=True
     )
-    await save_refs(message.from_user.id, "main", msg.chat.id, msg.message_id)
-
+    await set_refs(message.from_user.id, "main", msg.chat.id, msg.message_id)
 
 @dp.message(F.text == BTN_PROFILE)
-async def btn_profile(message: Message):
-    await ensure_user(message.from_user.id)
-    bal, ords = await get_user_stats(message.from_user.id)
-    text = PROFILE_TEXT_TEMPLATE.format(balance=f"{bal:.2f}", orders=ords)
+async def on_profile(message: Message):
     msg = await message.answer(
-        text,
-        reply_markup=kb_profile_actions(),
+        await render_profile(message.from_user.id),
+        reply_markup=kb_profile(),
         parse_mode="HTML",
         disable_web_page_preview=True
     )
-    await save_refs(message.from_user.id, "profile", msg.chat.id, msg.message_id)
-
+    await set_refs(message.from_user.id, "profile", msg.chat.id, msg.message_id)
 
 @dp.message(F.text == BTN_HELP)
-async def btn_help(message: Message):
-    await message.answer(
-        HELP_TEXT,
-        reply_markup=reply_menu(),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
-
+async def on_help(message: Message):
+    await message.answer(f"Support: {OPERATOR}", reply_markup=reply_menu())
 
 @dp.message(F.text == BTN_WORK)
-async def btn_work(message: Message):
-    await message.answer(
-        WORK_TEXT,
-        reply_markup=reply_menu(),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
+async def on_work(message: Message):
+    await message.answer("A", reply_markup=reply_menu())
 
+# promo input catcher (after user pressed Promo)
+@dp.message()
+async def catch_text(message: Message):
+    uid = message.from_user.id
+    await ensure_user(uid)
 
-# ----- Profile callbacks
-@dp.callback_query(F.data == "profile:open")
-async def cb_profile_open(call: CallbackQuery):
-    # просто открыть профиль заново
+    async with pool.acquire() as con:
+        awaiting = await con.fetchval("SELECT awaiting_promo FROM users WHERE user_id=$1", uid)
+
+    if not awaiting:
+        return  # ignore other random texts
+
+    ok, txt = await promo_apply(uid, message.text)
+    if ok:
+        await message.answer(f"✅ {txt}")
+        await refresh_saved(uid, "main")
+        await refresh_saved(uid, "profile")
+    else:
+        # keep awaiting_promo TRUE if invalid, so user can try again
+        await message.answer(f"❌ {txt}")
+
+@dp.callback_query(F.data == "profile:promo")
+async def cb_profile_promo(call: CallbackQuery):
     await call.answer()
-    bal, ords = await get_user_stats(call.from_user.id)
-    text = PROFILE_TEXT_TEMPLATE.format(balance=f"{bal:.2f}", orders=ords)
-    msg = await call.message.answer(
-        text,
-        reply_markup=kb_profile_actions(),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
-    await save_refs(call.from_user.id, "profile", msg.chat.id, msg.message_id)
-
-
-@dp.callback_query(F.data == "profile:topup")
-async def cb_profile_topup(call: CallbackQuery):
-    await call.answer()
-    await call.message.answer(
-        "💳 Пополнение баланса временно в разработке.",
-        reply_markup=kb_back_to_profile(),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
-
+    await promo_begin(call.from_user.id)
+    await call.message.answer("Send promo code:")
 
 @dp.callback_query(F.data == "profile:history")
-async def cb_profile_history(call: CallbackQuery):
+async def cb_history(call: CallbackQuery):
     await call.answer()
-    await ensure_user(call.from_user.id)
     async with pool.acquire() as con:
         rows = await con.fetch(
             """
-            SELECT product_name, link, price, created_at
+            SELECT product_name, price, link
             FROM purchases
             WHERE user_id=$1
             ORDER BY created_at DESC
-            LIMIT 50
+            LIMIT 20
             """,
             call.from_user.id
         )
     if not rows:
-        await call.message.answer(
-            "🧾 История покупок пуста.",
-            reply_markup=kb_back_to_profile(),
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
+        await call.message.answer("History empty")
         return
-
-    lines = ["🧾 <b>История покупок:</b>\n"]
+    out = ["History:"]
     for r in rows:
-        lines.append(f"• <b>{r['product_name']}</b> — {Decimal(r['price']):.2f}\n{r['link']}\n")
+        out.append(f"- {r['product_name']} ({Decimal(r['price']):.2f}) {r['link']}")
+    await call.message.answer("\n".join(out))
 
-    await call.message.answer(
-        "\n".join(lines),
-        reply_markup=kb_back_to_profile(),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
-
-
-@dp.callback_query(F.data == "profile:promocode")
-async def cb_profile_promocode(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "profile:topup")
+async def cb_topup(call: CallbackQuery):
     await call.answer()
-    await state.set_state(PromoStates.waiting_code)
-    await call.message.answer(
-        "🎟 Введите промокод одним сообщением.",
-        reply_markup=kb_back_to_profile(),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
+    await call.message.answer("Top up: soon")
 
-
-@dp.message(PromoStates.waiting_code)
-async def promo_input(message: Message, state: FSMContext):
-    code_in = message.text or ""
-    await state.clear()
-
-    ok, msg = await promo_apply(message.from_user.id, code_in)
-    await message.answer(msg, parse_mode="HTML", disable_web_page_preview=True)
-
-    # синхра сразу
-    await refresh_main_message(message.from_user.id)
-    await refresh_profile_message(message.from_user.id)
-
-
-# Резерв: команда /promo CODE (если FSM вдруг слетел)
-@dp.message(Command("promo"))
-async def promo_cmd(message: Message):
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("❗️Формат: /promo ВАШ_ПРОМОКОД")
-        return
-    ok, msg = await promo_apply(message.from_user.id, parts[1])
-    await message.answer(msg, parse_mode="HTML", disable_web_page_preview=True)
-    await refresh_main_message(message.from_user.id)
-    await refresh_profile_message(message.from_user.id)
-
-
-# ----- City / products flow
 @dp.callback_query(F.data == "city:odessa")
-async def cb_city_odessa(call: CallbackQuery):
+async def cb_city(call: CallbackQuery):
     await call.answer()
-    items = await get_city_buttons("odessa")
-    if not items:
-        await call.message.answer("Пока нет позиций для этого города.")
-        return
+    await call.message.answer("Odessa selected. Choose item:", reply_markup=kb_odessa_items())
 
-    await call.message.answer(
-        "✅ Вы выбрали город <b>Одесса</b>. Выберите товар:",
-        reply_markup=kb_city_products("odessa", items),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
-
-
-@dp.callback_query(F.data.startswith("product:"))
-async def cb_product(call: CallbackQuery):
-    # product:odessa:CODE
-    parts = (call.data or "").split(":")
-    if len(parts) != 3:
-        await call.answer("Ошибка данных", show_alert=True)
-        return
-    _, city, code = parts
-
-    product = await get_product(code)
-    if not product:
-        await call.answer("Товар не найден", show_alert=True)
-        return
-
-    text = (
-        f"📦 <b>{product['name']}</b>\n"
-        f"🏙 Город: <b>{city.capitalize()}</b>\n"
-        f"💳 Цена: <b>{Decimal(product['price']):.2f}</b>\n\n"
-        f"{product['description']}\n\n"
-        f"🔗 {product['link']}"
-    )
-    await call.message.answer(
-        text,
-        reply_markup=kb_product_buy(code),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
+@dp.callback_query(F.data.startswith("item:"))
+async def cb_item(call: CallbackQuery):
     await call.answer()
-
+    code = (call.data or "").split(":", 1)[1]
+    async with pool.acquire() as con:
+        p = await con.fetchrow(
+            "SELECT code,name,price,info,link FROM products WHERE code=$1 AND is_active=TRUE",
+            code
+        )
+    if not p:
+        await call.message.answer("Item not found")
+        return
+    text = f"<b>{p['name']}</b>\nPrice: <b>{Decimal(p['price']):.2f}</b>\n\n{p['info']}\n{p['link']}"
+    await call.message.answer(text, reply_markup=kb_buy(p["code"]), parse_mode="HTML", disable_web_page_preview=True)
 
 @dp.callback_query(F.data.startswith("buy:"))
 async def cb_buy(call: CallbackQuery):
-    parts = (call.data or "").split(":")
-    if len(parts) != 2:
-        await call.answer("Ошибка данных", show_alert=True)
-        return
-    _, code = parts
-
-    product = await get_product(code)
-    if not product:
-        await call.answer("Товар не найден", show_alert=True)
-        return
-
-    user_id = call.from_user.id
-    await ensure_user(user_id)
+    await call.answer()
+    uid = call.from_user.id
+    code = (call.data or "").split(":", 1)[1]
+    await ensure_user(uid)
 
     async with pool.acquire() as con:
         async with con.transaction():
-            row = await con.fetchrow(
-                "SELECT balance FROM users WHERE user_id=$1 FOR UPDATE",
-                user_id
+            p = await con.fetchrow(
+                "SELECT code,name,price,link FROM products WHERE code=$1 AND is_active=TRUE FOR UPDATE",
+                code
             )
-            balance = Decimal(row["balance"])
-            price = Decimal(product["price"])
+            if not p:
+                await call.message.answer("Item not found")
+                return
 
-            if balance < price:
-                await call.answer("Недостаточно средств 😔", show_alert=True)
+            u = await con.fetchrow("SELECT balance FROM users WHERE user_id=$1 FOR UPDATE", uid)
+            bal = Decimal(u["balance"])
+            price = Decimal(p["price"])
+            if bal < price:
+                await call.message.answer("Not enough balance")
                 return
 
             await con.execute(
-                """
-                UPDATE users
-                SET balance = balance - $1,
-                    orders_count = orders_count + 1
-                WHERE user_id=$2
-                """,
-                price, user_id
+                "UPDATE users SET balance=balance-$1, orders_count=orders_count+1 WHERE user_id=$2",
+                price, uid
             )
-
             await con.execute(
                 """
-                INSERT INTO purchases (user_id, product_code, product_name, price, link)
-                VALUES ($1,$2,$3,$4,$5)
+                INSERT INTO purchases(user_id, product_code, product_name, price, link)
+                VALUES($1,$2,$3,$4,$5)
                 """,
-                user_id, product["code"], product["name"], price, product["link"]
+                uid, p["code"], p["name"], price, p["link"]
             )
 
-    await call.message.answer(
-        f"✅ Покупка успешна!\n\n📦 <b>{product['name']}</b>\n💳 Списано: <b>{price:.2f}</b>\n🔗 {product['link']}",
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
-
-    # синхра сразу
-    await refresh_main_message(user_id)
-    await refresh_profile_message(user_id)
-
-    await call.answer()
+    await call.message.answer(f"✅ Bought {p['name']} (-{price:.2f})")
+    await refresh_saved(uid, "main")
+    await refresh_saved(uid, "profile")
 
 
-# =======================
-# ADMIN commands for products & promo
-# =======================
-@dp.message(Command("addproduct"))
-async def admin_addproduct(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    # Формат:
-    # /addproduct city code "Button Text" "Name" 123.45 https://link Description...
-    # Чтобы было проще — сделаем формат попроще:
-    # /addproduct city code price https://link ButtonText | Name | Description
-    # пример:
-    # /addproduct odessa pos4 99.99 https://site.com Btn | Name | Desc
-
-    parts = (message.text or "").split(maxsplit=4)
-    if len(parts) < 5:
-        await message.answer(
-            "Формат:\n/addproduct city code price link Btn | Name | Description"
-        )
-        return
-
-    _, city, code, price_str, rest = parts
-    rest2 = rest.split(maxsplit=1)
-    if len(rest2) < 2:
-        await message.answer("Формат:\n/addproduct city code price link Btn | Name | Description")
-        return
-    link = rest2[0].strip()
-    meta = rest2[1].strip()
-
-    try:
-        price = Decimal(price_str)
-    except Exception:
-        await message.answer("Цена должна быть числом типа 100 или 100.00")
-        return
-
-    # meta: "Btn | Name | Description"
-    chunks = [x.strip() for x in meta.split("|")]
-    if len(chunks) < 3:
-        await message.answer("Нужно: Btn | Name | Description")
-        return
-
-    button_text, name, description = chunks[0], chunks[1], "|".join(chunks[2:]).strip()
-
-    async with pool.acquire() as con:
-        await con.execute(
-            """
-            INSERT INTO products (city, code, button_text, name, price, description, link, is_active)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,TRUE)
-            ON CONFLICT (code) DO UPDATE
-            SET city=EXCLUDED.city,
-                button_text=EXCLUDED.button_text,
-                name=EXCLUDED.name,
-                price=EXCLUDED.price,
-                description=EXCLUDED.description,
-                link=EXCLUDED.link,
-                is_active=TRUE
-            """,
-            city.lower(), code, button_text, name, price, description, link
-        )
-    await message.answer(f"✅ Товар добавлен/обновлён: {code}")
-
-
-@dp.message(Command("listproducts"))
-async def admin_listproducts(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    city = "odessa"
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) == 2:
-        city = parts[1].strip().lower()
-
-    async with pool.acquire() as con:
-        rows = await con.fetch(
-            """
-            SELECT code, button_text, name, price, is_active
-            FROM products
-            WHERE city=$1
-            ORDER BY id ASC
-            """,
-            city
-        )
-    if not rows:
-        await message.answer("Пусто.")
-        return
-
-    lines = [f"📦 <b>Товары ({city}):</b>\n"]
-    for r in rows:
-        st = "✅" if r["is_active"] else "❌"
-        lines.append(f"{st} <b>{r['code']}</b> — {r['button_text']} — {r['name']} — {Decimal(r['price']):.2f}")
-    await message.answer("\n".join(lines), parse_mode="HTML")
-
-
-@dp.message(Command("delproduct"))
-async def admin_delproduct(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    parts = (message.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("Формат: /delproduct code")
-        return
-    code = parts[1].strip()
-    async with pool.acquire() as con:
-        await con.execute("UPDATE products SET is_active=FALSE WHERE code=$1", code)
-    await message.answer(f"✅ Отключено: {code}")
-
-
-@dp.message(Command("addpromo"))
-async def admin_addpromo(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    # /addpromo CODE 300 5
-    parts = (message.text or "").split()
-    if len(parts) < 3:
-        await message.answer("Формат: /addpromo CODE AMOUNT [USES]")
-        return
-    code = parts[1].strip()
-    try:
-        amount = Decimal(parts[2])
-    except Exception:
-        await message.answer("AMOUNT должно быть числом, напр: 300 или 300.00")
-        return
-    uses = 1
-    if len(parts) >= 4 and parts[3].isdigit():
-        uses = int(parts[3])
-
-    async with pool.acquire() as con:
-        await con.execute(
-            """
-            INSERT INTO promo_codes (code, amount, is_active, uses_left)
-            VALUES ($1,$2,TRUE,$3)
-            ON CONFLICT (code) DO UPDATE
-            SET amount=EXCLUDED.amount,
-                is_active=TRUE,
-                uses_left=EXCLUDED.uses_left
-            """,
-            code, amount, uses
-        )
-    await message.answer(f"✅ Промокод добавлен: {code} (+{amount:.2f}, uses={uses})")
-
-
-# =======================
-# MAIN
-# =======================
 async def main():
     global bot_ref
     await db_init()
-
     bot = Bot(token=BOT_TOKEN)
     bot_ref = bot
-
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
