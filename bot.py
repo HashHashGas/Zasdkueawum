@@ -13,7 +13,7 @@ from aiogram.types import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-ADMIN_IDS = os.getenv("ADMIN_IDS", "").strip()  # можно пусто
+ADMIN_IDS = os.getenv("ADMIN_IDS", "").strip()  # пример: "123456789"
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN missing")
@@ -28,8 +28,8 @@ if ADMIN_IDS:
             ADMIN_SET.add(int(x))
 
 def is_admin(uid: int) -> bool:
+    # если ADMIN_IDS не задан — считаем админом всех (чтобы /addpromo точно работал на старте)
     return (not ADMIN_SET) or (uid in ADMIN_SET)
-
 
 # ====== ТВОИ ТЕКСТЫ ======
 MAIN_TEXT_TEMPLATE = """✋🏻 Здравствуй! Кавалер 🎩
@@ -75,8 +75,7 @@ HELP_TEXT = """Если ты возник с проблемой, или есть
 
 WORK_TEXT = "A"
 
-
-# ====== КНОПКИ НИЗ ======
+# ====== КНОПКИ ======
 BTN_MAIN = "ГЛАВНАЯ ⚪"
 BTN_PROFILE = "ПРОФИЛЬ 👤"
 BTN_HELP = "ПОМОЩЬ 💬"
@@ -92,18 +91,15 @@ def reply_menu():
         is_persistent=True
     )
 
-
-# ====== INLINE ======
 def kb_main_city():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Одесса ⚓", callback_data="city:odessa")]
     ])
 
 def kb_profile_actions():
-    # callback_data сделан так, чтобы ловить старые и новые варианты
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Пополнить баланс", callback_data="profile:topup")],
-        [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="profile:promocode")],
+        [InlineKeyboardButton(text="🎟 Активировать промокод", callback_data="profile:promo")],
         [InlineKeyboardButton(text="🧾 История покупок", callback_data="profile:history")],
     ])
 
@@ -120,21 +116,13 @@ def kb_buy(code: str):
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="city:odessa")],
     ])
 
-def kb_back_profile():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="profile:open")]
-    ])
-
-
-# ====== КАТАЛОГ (локально, чтобы кнопки всегда работали) ======
+# ====== ЛОКАЛЬНЫЙ КАТАЛОГ ======
 CATALOG = {
     "saint":   {"name": "saint",   "price": Decimal("100.00"), "info": "Описание saint",   "link": "https://example.com/saint"},
     "big_bob": {"name": "big bob", "price": Decimal("150.00"), "info": "Описание big bob", "link": "https://example.com/big_bob"},
     "shenen":  {"name": "shenen",  "price": Decimal("200.00"), "info": "Описание shenen",  "link": "https://example.com/shenen"},
 }
 
-
-# ====== DB ======
 pool: asyncpg.Pool | None = None
 bot_ref: Bot | None = None
 dp = Dispatcher()
@@ -148,7 +136,6 @@ async def db_init():
             user_id BIGINT PRIMARY KEY,
             balance NUMERIC(12,2) NOT NULL DEFAULT 0,
             orders_count INT NOT NULL DEFAULT 0,
-            awaiting_promo BOOLEAN NOT NULL DEFAULT FALSE,
             main_chat_id BIGINT,
             main_message_id BIGINT,
             profile_chat_id BIGINT,
@@ -208,7 +195,7 @@ async def set_refs(uid: int, kind: str, chat_id: int, msg_id: int):
     async with pool.acquire() as con:
         await con.execute(f"UPDATE users SET {c1}=$1, {c2}=$2 WHERE user_id=$3", chat_id, msg_id, uid)
 
-async def refresh_saved(uid: int, kind: str):
+async def refresh(uid: int):
     if bot_ref is None:
         return
     async with pool.acquire() as con:
@@ -219,7 +206,7 @@ async def refresh_saved(uid: int, kind: str):
     if not r:
         return
     try:
-        if kind == "main" and r["main_chat_id"] and r["main_message_id"]:
+        if r["main_chat_id"] and r["main_message_id"]:
             await bot_ref.edit_message_text(
                 chat_id=int(r["main_chat_id"]),
                 message_id=int(r["main_message_id"]),
@@ -228,7 +215,7 @@ async def refresh_saved(uid: int, kind: str):
                 parse_mode="HTML",
                 disable_web_page_preview=True
             )
-        if kind == "profile" and r["profile_chat_id"] and r["profile_message_id"]:
+        if r["profile_chat_id"] and r["profile_message_id"]:
             await bot_ref.edit_message_text(
                 chat_id=int(r["profile_chat_id"]),
                 message_id=int(r["profile_message_id"]),
@@ -240,14 +227,8 @@ async def refresh_saved(uid: int, kind: str):
     except Exception:
         pass
 
-
-# ====== PROMO (железно через БД, не зависит от памяти/перезапуска) ======
-async def promo_begin(uid: int):
-    await ensure_user(uid)
-    async with pool.acquire() as con:
-        await con.execute("UPDATE users SET awaiting_promo=TRUE WHERE user_id=$1", uid)
-
-async def promo_apply(uid: int, code_in: str):
+# ====== PROMO “5D”: одна функция, один вход, всегда отвечает ======
+async def apply_promo(uid: int, code_in: str) -> tuple[bool, str]:
     code_in = " ".join((code_in or "").strip().split())
     if not code_in:
         return False, "❌ Пустой промокод."
@@ -258,7 +239,9 @@ async def promo_apply(uid: int, code_in: str):
                 """
                 SELECT code, amount, uses_left
                 FROM promo_codes
-                WHERE lower(code)=lower($1) AND is_active=TRUE AND uses_left>0
+                WHERE lower(code)=lower($1)
+                  AND is_active=TRUE
+                  AND uses_left > 0
                 FOR UPDATE
                 """,
                 code_in
@@ -266,57 +249,37 @@ async def promo_apply(uid: int, code_in: str):
             if not row:
                 return False, "❌ Промокод недействителен или уже использован."
 
-            used = await con.fetchval(
+            already = await con.fetchval(
                 "SELECT 1 FROM promo_activations WHERE user_id=$1 AND code=$2",
                 uid, row["code"]
             )
-            if used:
+            if already:
                 return False, "❌ Вы уже активировали этот промокод."
 
             amount = Decimal(row["amount"])
-
+            await con.execute("UPDATE users SET balance = balance + $1 WHERE user_id=$2", amount, uid)
+            await con.execute("UPDATE promo_codes SET uses_left = uses_left - 1 WHERE code=$1", row["code"])
             await con.execute(
-                "UPDATE users SET balance=balance+$1, awaiting_promo=FALSE WHERE user_id=$2",
-                amount, uid
-            )
-            await con.execute("UPDATE promo_codes SET uses_left=uses_left-1 WHERE code=$1", row["code"])
-            await con.execute(
-                "INSERT INTO promo_activations(user_id,code,amount) VALUES($1,$2,$3)",
+                "INSERT INTO promo_activations(user_id, code, amount) VALUES($1,$2,$3)",
                 uid, row["code"], amount
             )
 
     return True, f"✅ Промокод <b>{row['code']}</b> активирован!\n➕ Начислено: <b>{amount:.2f}</b>"
 
-
 # ====== HANDLERS ======
 @dp.message(CommandStart())
 async def start(message: Message):
     await ensure_user(message.from_user.id)
-    await message.answer(
-        await render_main(message.from_user.id),
-        reply_markup=reply_menu(),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
+    await message.answer(await render_main(message.from_user.id), reply_markup=reply_menu(), parse_mode="HTML", disable_web_page_preview=True)
 
 @dp.message(F.text == BTN_MAIN)
 async def on_main(message: Message):
-    msg = await message.answer(
-        await render_main(message.from_user.id),
-        reply_markup=kb_main_city(),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
+    msg = await message.answer(await render_main(message.from_user.id), reply_markup=kb_main_city(), parse_mode="HTML", disable_web_page_preview=True)
     await set_refs(message.from_user.id, "main", msg.chat.id, msg.message_id)
 
 @dp.message(F.text == BTN_PROFILE)
 async def on_profile(message: Message):
-    msg = await message.answer(
-        await render_profile(message.from_user.id),
-        reply_markup=kb_profile_actions(),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
+    msg = await message.answer(await render_profile(message.from_user.id), reply_markup=kb_profile_actions(), parse_mode="HTML", disable_web_page_preview=True)
     await set_refs(message.from_user.id, "profile", msg.chat.id, msg.message_id)
 
 @dp.message(F.text == BTN_HELP)
@@ -327,49 +290,30 @@ async def on_help(message: Message):
 async def on_work(message: Message):
     await message.answer(WORK_TEXT, reply_markup=reply_menu())
 
-
-# Ловим ввод промо только когда awaiting_promo=TRUE
-@dp.message()
-async def catch_text(message: Message):
-    uid = message.from_user.id
-    await ensure_user(uid)
-    async with pool.acquire() as con:
-        awaiting = await con.fetchval("SELECT awaiting_promo FROM users WHERE user_id=$1", uid)
-
-    if not awaiting:
+# ПРОМО КОМАНДА — без кнопок, без состояний:
+# /promo CODE
+@dp.message(Command("promo"))
+async def cmd_promo(message: Message):
+    await ensure_user(message.from_user.id)
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Формат: /promo ВАШ_ПРОМОКОД")
         return
-
-    ok, txt = await promo_apply(uid, message.text)
+    ok, txt = await apply_promo(message.from_user.id, parts[1])
     await message.answer(txt, parse_mode="HTML", disable_web_page_preview=True)
-
     if ok:
-        await refresh_saved(uid, "main")
-        await refresh_saved(uid, "profile")
+        await refresh(message.from_user.id)
 
-
-# ====== CALLBACKS ======
-@dp.callback_query(F.data == "profile:open")
-async def cb_profile_open(call: CallbackQuery):
+# CALLBACK: промо-кнопка всегда кликабельна и всегда отвечает
+@dp.callback_query(F.data.in_({"profile:promo", "profile:promocode"}))
+async def cb_promo(call: CallbackQuery):
     await call.answer()
-    msg = await call.message.answer(
-        await render_profile(call.from_user.id),
-        reply_markup=kb_profile_actions(),
-        parse_mode="HTML",
-        disable_web_page_preview=True
-    )
-    await set_refs(call.from_user.id, "profile", msg.chat.id, msg.message_id)
+    await call.message.answer("🎟 Введите промокод командой:\n/promo ВАШ_ПРОМОКОД")
 
 @dp.callback_query(F.data == "profile:topup")
 async def cb_topup(call: CallbackQuery):
     await call.answer()
-    await call.message.answer("Пополнение скоро будет.", reply_markup=kb_back_profile())
-
-# Супер-ловушка под все варианты промо-кнопок (старые/новые)
-@dp.callback_query(F.data.startswith("profile:promo"))
-async def cb_promo_any(call: CallbackQuery):
-    await call.answer()
-    await promo_begin(call.from_user.id)
-    await call.message.answer("🎟 Введите промокод одним сообщением:")
+    await call.message.answer("Пополнение скоро будет.")
 
 @dp.callback_query(F.data == "profile:history")
 async def cb_history(call: CallbackQuery):
@@ -380,12 +324,12 @@ async def cb_history(call: CallbackQuery):
             call.from_user.id
         )
     if not rows:
-        await call.message.answer("🧾 История покупок пуста.", reply_markup=kb_back_profile())
+        await call.message.answer("🧾 История покупок пуста.")
         return
     out = ["🧾 <b>История покупок:</b>\n"]
     for r in rows:
         out.append(f"• <b>{r['product_name']}</b> — {Decimal(r['price']):.2f}\n{r['link']}\n")
-    await call.message.answer("\n".join(out), parse_mode="HTML", disable_web_page_preview=True, reply_markup=kb_back_profile())
+    await call.message.answer("\n".join(out), parse_mode="HTML", disable_web_page_preview=True)
 
 @dp.callback_query(F.data == "city:odessa")
 async def cb_city(call: CallbackQuery):
@@ -423,34 +367,23 @@ async def cb_buy(call: CallbackQuery):
             if bal < price:
                 await call.message.answer("Недостаточно средств 😔")
                 return
-
-            await con.execute(
-                "UPDATE users SET balance=balance-$1, orders_count=orders_count+1 WHERE user_id=$2",
-                price, uid
-            )
+            await con.execute("UPDATE users SET balance=balance-$1, orders_count=orders_count+1 WHERE user_id=$2", price, uid)
             await con.execute(
                 "INSERT INTO purchases(user_id, product_code, product_name, price, link) VALUES($1,$2,$3,$4,$5)",
                 uid, code, item["name"], price, item["link"]
             )
 
-    await call.message.answer(
-        f"✅ Покупка успешна: <b>{item['name']}</b>\n💳 Списано: <b>{price:.2f}</b>",
-        parse_mode="HTML"
-    )
-    await refresh_saved(uid, "main")
-    await refresh_saved(uid, "profile")
+    await call.message.answer(f"✅ Покупка успешна: <b>{item['name']}</b>\n💳 Списано: <b>{price:.2f}</b>", parse_mode="HTML")
+    await refresh(uid)
 
-# fallback — чтобы старые кнопки не “молчали”
-@dp.callback_query()
-async def cb_unknown(call: CallbackQuery):
-    await call.answer("Кнопка устарела. Нажми ГЛАВНАЯ ⚪ / ПРОФИЛЬ 👤 заново.", show_alert=True)
-
-
-# ====== ADMIN: создать промокод для теста ======
+# ADMIN: создать промо (всегда отвечает)
 @dp.message(Command("addpromo"))
 async def cmd_addpromo(message: Message):
-    if not is_admin(message.from_user.id):
+    uid = message.from_user.id
+    if not is_admin(uid):
+        await message.answer("❌ Нет прав на /addpromo (проверь ADMIN_IDS).")
         return
+
     parts = (message.text or "").split()
     if len(parts) < 3:
         await message.answer("Формат: /addpromo CODE AMOUNT [USES]")
@@ -474,7 +407,6 @@ async def cmd_addpromo(message: Message):
             code, amount, uses
         )
     await message.answer(f"✅ Промокод создан: {code} (+{amount:.2f}, uses={uses})")
-
 
 async def main():
     global bot_ref
