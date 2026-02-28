@@ -67,7 +67,7 @@ https://t.me/+HvuVKZkR2-03MzBi
 https://t.me/+HvuVKZkR2-03MzBi
 
 Оператор/Сапорт : 
-@gskalye
+@gskalyee
 
 🏦Баланс : {balance}
 🛍️Количество заказов : {orders}
@@ -191,3 +191,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
