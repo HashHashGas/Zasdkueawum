@@ -92,16 +92,16 @@ def inline_main_city() -> InlineKeyboardMarkup:
     )
 
 
-# 3 кнопки внутри Одессы — МЕНЯЕШЬ ЛЕГКО ТУТ
-ODESA_BUTTONS = [
-    ("🛍 Каталог", "odesa:catalog"),
-    ("💬 Оператор", "odesa:operator"),
-    ("⬅️ Назад", "odesa:back"),
+# ✅ ВОТ ТУТ ЛЕГКО МЕНЯТЬ 3 КНОПКИ ДЛЯ ОДЕССЫ (только названия/кол-во/порядок)
+ODESA_ITEMS = [
+    ("1) Position 1", "odesa:item:1"),
+    ("2) Position 2", "odesa:item:2"),
+    ("3) Position 3", "odesa:item:3"),
 ]
 
 def inline_odesa_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=cb)] for t, cb in ODESA_BUTTONS]
+        inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=cb)] for t, cb in ODESA_ITEMS]
     )
 
 
@@ -125,7 +125,6 @@ async def db_init() -> None:
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
 
     async with pool.acquire() as con:
-        # ВАЖНО: одним execute можно гнать несколько CREATE TABLE
         await con.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -182,7 +181,6 @@ async def get_user_stats(user_id: int) -> tuple[decimal.Decimal, int]:
 
 
 async def activate_promo(user_id: int, code: str) -> tuple[bool, str]:
-    """Промокоды — если решишь использовать. Сейчас просто логика."""
     code = code.strip().upper()
     assert pool is not None
 
@@ -280,29 +278,32 @@ async def btn_work(message: Message):
 
 # ========= CALLBACKS =========
 
-# Нажал Одесса — НИКАКОГО ТЕКСТА. Просто меняем кнопки под этим же сообщением
+# ✅ ЕДИНСТВЕННАЯ ПРАВКА ПО ТВОЕМУ ТЗ:
+# Нажал Одесса — ВЫБИВАЕТСЯ НОВОЕ СООБЩЕНИЕ с 3 кнопками
 @dp.callback_query(F.data == "city:odesa")
 async def cb_city_odesa(call: CallbackQuery):
     await call.answer()
-    await call.message.edit_reply_markup(reply_markup=inline_odesa_menu())
+    await call.message.answer(
+        "✅ Вы выбрали город Одесса.\nВыберите товар:",
+        reply_markup=inline_odesa_menu()
+    )
 
 
-# 3 кнопки Одессы — пока заглушки (можешь менять как хочешь)
-@dp.callback_query(F.data == "odesa:catalog")
-async def cb_odesa_catalog(call: CallbackQuery):
+# 3 кнопки Одессы — пока заглушки (потом добавим логику/описания)
+@dp.callback_query(F.data == "odesa:item:1")
+async def cb_odesa_item_1(call: CallbackQuery):
     await call.answer()
-    await call.message.answer("Каталог: скоро добавим.")
+    await call.message.answer("Position 1 — скоро добавим описание/кнопки.")
 
-@dp.callback_query(F.data == "odesa:operator")
-async def cb_odesa_operator(call: CallbackQuery):
+@dp.callback_query(F.data == "odesa:item:2")
+async def cb_odesa_item_2(call: CallbackQuery):
     await call.answer()
-    await call.message.answer("@gskalye")
+    await call.message.answer("Position 2 — скоро добавим описание/кнопки.")
 
-@dp.callback_query(F.data == "odesa:back")
-async def cb_odesa_back(call: CallbackQuery):
+@dp.callback_query(F.data == "odesa:item:3")
+async def cb_odesa_item_3(call: CallbackQuery):
     await call.answer()
-    # возвращаем обратно одну кнопку “Одесса”
-    await call.message.edit_reply_markup(reply_markup=inline_main_city())
+    await call.message.answer("Position 3 — скоро добавим описание/кнопки.")
 
 
 # профиль-кнопки
