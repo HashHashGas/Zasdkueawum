@@ -104,13 +104,14 @@ TOPUP_ASK_TEXT = f"💳 Введите сумму пополнения в гри
 
 # ================== KEYBOARDS ==================
 def bottom_menu() -> ReplyKeyboardMarkup:
+    # ✅ FIX: убрали is_persistent=True, чтобы нижнюю панель можно было скрывать
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="ГЛАВНАЯ 🔘"), KeyboardButton(text="ПРОФИЛЬ 👤")],
             [KeyboardButton(text="ПОМОЩЬ 💬"), KeyboardButton(text="РАБОТА 💸")],
         ],
         resize_keyboard=True,
-        is_persistent=True,
+        # is_persistent=True  # <-- удалено
     )
 
 
@@ -271,15 +272,12 @@ async def db_init() -> None:
         await con.execute("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'UAH'")
 
         # ✅ КРИТИЧНО: если amount есть и он NULL — заполним из amount_int, чтобы убрать твой краш
-        # (Если amount уже NOT NULL - тогда NULL там быть не может, но на всякий случай)
         await con.execute("UPDATE invoices SET amount = amount_int WHERE amount IS NULL")
 
-        # Попробуем поставить default/not null на amount (если тип позволяет) — если не позволит, бот всё равно будет писать amount при INSERT.
         try:
             await con.execute("ALTER TABLE invoices ALTER COLUMN amount SET DEFAULT 0")
             await con.execute("ALTER TABLE invoices ALTER COLUMN amount SET NOT NULL")
         except Exception:
-            # тип мог быть NUMERIC/TEXT — тогда просто оставляем, но мы при вставке будем всегда передавать amount
             pass
 
 
@@ -523,7 +521,6 @@ async def invoice_create(user_id: int, kind: str, amount_int: int, product_code:
 
     assert pool is not None
     async with pool.acquire() as con:
-        # ✅ ВАЖНО: пишем И amount_int И amount — чтобы не падало на старой схеме
         await con.execute(
             """
             INSERT INTO invoices(trade_id, user_id, kind, amount_int, amount, currency, product_code, card_number, status)
@@ -914,4 +911,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
