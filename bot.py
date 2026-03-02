@@ -4,7 +4,7 @@ import decimal
 import asyncpg
 import aiohttp
 import uuid
-from urllib.parse import quote
+from urllib.parse import quote_plus
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
@@ -168,10 +168,18 @@ def parse_amount_uah(text: str) -> decimal.Decimal | None:
         amt = decimal.Decimal((text or "").replace(",", ".").strip())
         if amt <= 0:
             return None
-        # ограничим до 2 знаков
         return amt.quantize(decimal.Decimal("0.01"))
     except Exception:
         return None
+
+
+def to_int_amount(amount: decimal.Decimal) -> int:
+    # По доке amount = int
+    # Округляем до целых гривен вверх до .00
+    q = amount.quantize(decimal.Decimal("1."))
+    if q <= 0:
+        q = decimal.Decimal("1")
+    return int(q)
 
 
 async def db_init() -> None:
@@ -233,7 +241,6 @@ async def db_init() -> None:
         )
         """)
 
-        # ✅ PAYMENTS (без callback, через “проверить оплату”)
         await con.execute("""
         CREATE TABLE IF NOT EXISTS invoices (
             trade_id TEXT PRIMARY KEY,
@@ -403,7 +410,6 @@ async def activate_promo(user_id: int, raw_code: str) -> tuple[bool, str]:
     return True, f"✅ Промокод активирован!\n🏦 Начислено: {amount:.2f} {UAH}"
 
 
-# ✅ FIX: Балансом всегда выдаёт ссылку (если link задан)
 async def buy_with_balance(user_id: int, product_code: str) -> tuple[bool, str]:
     await ensure_user(user_id)
     product = await get_product(product_code)
@@ -442,62 +448,72 @@ async def buy_with_balance(user_id: int, product_code: str) -> tuple[bool, str]:
     return True, f"✅ Покупка успешна: {name}\nСписано: {price:.2f} {UAH}\n\n🔗 Твоя ссылка:\n{link}"
 
 
-# ================== PaySync (без callback) ==================
-async def paysync_create_invoice(amount_uah: decimal.Decimal, data: str) -> tuple[str, str]:
+# ================== PaySync (REDIRECT + check) ==================
+async def paysync_create_invoice_redirect(amount_uah: decimal.Decimal, data: str) -> tuple[str, str]:
     """
-    Возвращает (trade_id, payment_url)
-    Используем redirect create_invoice, а дальше проверяем gettrans по trade_id.
+    По доке:
+    GET https://paysync.bot/create_invoice/{client}/{amount}/{currency}?data=...
+    Ответ JSON: { "url": "...", "trade": 123, ... }
     """
-    # data лучше кодировать
-    data_q = quote(data)
+    amount_int = to_int_amount(amount_uah)  # по доке amount int
+    data_q = quote_plus(data)
 
-    url = f"https://paysync.bot/create_invoice/{PAYSYNC_CLIENT_ID}/{amount_uah:.2f}/{PAYSYNC_CURRENCY}?data={data_q}"
+    url = f"https://paysync.bot/create_invoice/{PAYSYNC_CLIENT_ID}/{amount_int}/{PAYSYNC_CURRENCY}?data={data_q}"
 
-    headers = {"apikey": PAYSYNC_APIKEY}
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        # apikey не обязателен для этого endpoint по доке,
+        # но иногда полезен; если у тебя начнутся ошибки — можно убрать.
+        "apikey": PAYSYNC_APIKEY,
+    }
+
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, timeout=30) as resp:
-            # иногда API возвращает text, иногда json
-            try:
-                js = await resp.json()
-            except Exception:
-                txt = await resp.text()
-                raise RuntimeError(f"PaySync create_invoice bad response: {txt[:300]}")
+            ct = (resp.headers.get("Content-Type") or "").lower()
+            txt = await resp.text()
 
-    # Попробуем угадать поля максимально устойчиво
-    trade = js.get("trade") or js.get("trade_id") or js.get("id") or js.get("invoice_id")
-    pay_url = js.get("url") or js.get("payment_url") or js.get("pay_url")
+    # PaySync может вернуть JSON, но с неправильным content-type — пробуем распарсить вручную
+    try:
+        import json
+        js = json.loads(txt)
+    except Exception:
+        raise RuntimeError(f"PaySync create_invoice not JSON: {txt[:250]}")
 
+    trade = js.get("trade")
+    pay_url = js.get("url")
     if not trade or not pay_url:
-        raise RuntimeError(f"PaySync create_invoice missing fields: {js}")
+        raise RuntimeError(f"PaySync invoice missing fields: {js}")
 
     return str(trade), str(pay_url)
 
 
 async def paysync_gettrans(trade_id: str) -> dict:
     url = f"https://paysync.bot/gettrans/{trade_id}"
-    headers = {"apikey": PAYSYNC_APIKEY}
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "apikey": PAYSYNC_APIKEY,  # если вдруг включена защита
+    }
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, timeout=30) as resp:
-            try:
-                return await resp.json()
-            except Exception:
-                txt = await resp.text()
-                raise RuntimeError(f"PaySync gettrans bad response: {txt[:300]}")
+            txt = await resp.text()
+    try:
+        import json
+        return json.loads(txt)
+    except Exception:
+        raise RuntimeError(f"PaySync gettrans not JSON: {txt[:250]}")
 
 
 async def invoice_create(user_id: int, kind: str, amount: decimal.Decimal, product_code: str | None) -> tuple[str, str]:
-    """
-    Создаёт инвойс в PaySync и сохраняет в БД.
-    """
     await ensure_user(user_id)
     nonce = uuid.uuid4().hex[:12]
     data = f"{kind}:{user_id}:{product_code or '-'}:{nonce}"
 
-    trade_id, payment_url = await paysync_create_invoice(amount, data)
+    trade_id, payment_url = await paysync_create_invoice_redirect(amount, data)
 
     assert pool is not None
     async with pool.acquire() as con:
-        # если вдруг trade_id уже был — просто перезапишем
         await con.execute(
             """
             INSERT INTO invoices(trade_id, user_id, kind, amount, currency, product_code, status)
@@ -517,23 +533,14 @@ async def invoice_create(user_id: int, kind: str, amount: decimal.Decimal, produ
 
 
 async def invoice_apply_paid(trade_id: str) -> tuple[bool, str]:
-    """
-    Проверяет PaySync, если paid — применяет:
-    - topup: начислить баланс
-    - product: выдать товар, списать/записать как покупку (оплата картой — баланс не трогаем)
-    Делает идемпотентно (повторно не начислит/не выдаст).
-    Возвращает (ok, message_to_user)
-    """
     assert pool is not None
 
-    # 1) Проверяем статус у PaySync
     js = await paysync_gettrans(trade_id)
     status = (js.get("status") or "").lower()
 
     if status != "paid":
         return False, "❌ Оплата ещё не подтверждена."
 
-    # 2) Берём инвойс из БД
     async with pool.acquire() as con:
         inv = await con.fetchrow("SELECT * FROM invoices WHERE trade_id=$1", trade_id)
 
@@ -541,11 +548,9 @@ async def invoice_apply_paid(trade_id: str) -> tuple[bool, str]:
         return False, "❌ Инвойс не найден."
 
     if inv["status"] in ("paid", "done"):
-        # уже применено
         if inv["kind"] == "topup":
-            return True, "✅ Оплата уже была подтверждена. Баланс пополнен."
-        else:
-            return True, "✅ Оплата уже была подтверждена. Товар уже выдан."
+            return True, "✅ Оплата уже подтверждена. Баланс пополнен."
+        return True, "✅ Оплата уже подтверждена. Товар уже выдан."
 
     user_id = int(inv["user_id"])
     kind = str(inv["kind"])
@@ -559,19 +564,17 @@ async def invoice_apply_paid(trade_id: str) -> tuple[bool, str]:
                     "UPDATE users SET balance = balance + $2 WHERE user_id=$1",
                     user_id, amount
                 )
-                await con.execute(
-                    "UPDATE invoices SET status='paid' WHERE trade_id=$1",
-                    trade_id
-                )
+                await con.execute("UPDATE invoices SET status='paid' WHERE trade_id=$1", trade_id)
         return True, f"✅ Оплата подтверждена.\n🏦 Баланс пополнен на {amount:.2f} {UAH}"
 
     if kind == "product":
         if not product_code:
-            return False, "❌ Ошибка инвойса: нет товара."
+            async with pool.acquire() as con:
+                await con.execute("UPDATE invoices SET status='paid' WHERE trade_id=$1", trade_id)
+            return True, "✅ Оплата подтверждена, но товар не привязан. Напиши оператору."
 
         product = await get_product(str(product_code))
         if not product or not product["is_active"]:
-            # пометим, что paid, но товар недоступен (чтобы не выдавать)
             async with pool.acquire() as con:
                 await con.execute("UPDATE invoices SET status='paid' WHERE trade_id=$1", trade_id)
             return True, "✅ Оплата подтверждена, но товар сейчас недоступен. Напиши оператору."
@@ -579,6 +582,7 @@ async def invoice_apply_paid(trade_id: str) -> tuple[bool, str]:
         name = str(product["name"])
         link = str(product["link"] or "")
         price = decimal.Decimal(product["price"])
+
         if not link.strip():
             async with pool.acquire() as con:
                 await con.execute("UPDATE invoices SET status='paid' WHERE trade_id=$1", trade_id)
@@ -597,10 +601,7 @@ async def invoice_apply_paid(trade_id: str) -> tuple[bool, str]:
                     """,
                     user_id, str(product_code), name, price, link
                 )
-                await con.execute(
-                    "UPDATE invoices SET status='done' WHERE trade_id=$1",
-                    trade_id
-                )
+                await con.execute("UPDATE invoices SET status='done' WHERE trade_id=$1", trade_id)
 
         return True, f"✅ Оплата подтверждена.\n✅ Покупка успешна: {name}\n\n🔗 Твоя ссылка:\n{link}"
 
@@ -620,7 +621,6 @@ class TopupStates(StatesGroup):
 dp = Dispatcher(storage=MemoryStorage())
 
 
-# ================== HANDLERS ==================
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     text = await render_main_text(message.from_user.id)
@@ -670,7 +670,6 @@ async def cb_city_odesa(call: CallbackQuery):
 async def cb_product(call: CallbackQuery):
     await call.answer()
     parts = call.data.split(":")
-    # prod:{city}:{code}
     if len(parts) != 3:
         return
     code = parts[2]
@@ -695,16 +694,20 @@ async def cb_district(call: CallbackQuery):
     await call.message.answer(DISTRICT_TEXT, reply_markup=inline_pay_buttons(code))
 
 
-# ✅ Балансом — фикс: выдаёт ссылку
+# ✅ Балансом — всегда отвечает
 @dp.callback_query(F.data.startswith("pay:bal:"))
 async def cb_pay_balance(call: CallbackQuery):
-    await call.answer()
-    code = call.data.split(":")[-1]
-    ok, msg = await buy_with_balance(call.from_user.id, code)
-    await call.message.answer(msg)
+    try:
+        await call.answer()
+        code = call.data.split(":")[-1]
+        ok, msg = await buy_with_balance(call.from_user.id, code)
+        await call.message.answer(msg)
+    except Exception as e:
+        # чтобы ты видел проблему сразу, а не "ничего"
+        await call.message.answer(f"❌ Ошибка оплаты балансом: {e}")
 
 
-# ✅ Картой — создаём инвойс PaySync на сумму товара + “Проверить оплату”
+# ✅ Картой — PaySync invoice + кнопка проверки
 @dp.callback_query(F.data.startswith("pay:card:"))
 async def cb_pay_card(call: CallbackQuery):
     await call.answer()
@@ -726,23 +729,20 @@ async def cb_pay_card(call: CallbackQuery):
 
     kb = inline_pay_and_check(payment_url, trade_id, label="💳 Оплатить картой")
     await call.message.answer(
-        f"💳 Оплата товара: {name}\nСумма: {price:.2f} {UAH}\n\nПосле оплаты нажми «✅ Проверить оплату».",
+        f"💳 Оплата товара: {name}\nСумма: {to_int_amount(price)} {UAH}\n\nПосле оплаты нажми «✅ Проверить оплату».",
         reply_markup=kb
     )
 
 
-# ✅ Проверить оплату (и топап, и покупку товара)
 @dp.callback_query(F.data.startswith("check:"))
 async def cb_check(call: CallbackQuery):
     await call.answer()
     trade_id = call.data.split(":", 1)[1]
-
     try:
         ok, msg = await invoice_apply_paid(trade_id)
     except Exception as e:
         await call.message.answer(f"❌ Ошибка проверки оплаты: {e}")
         return
-
     await call.message.answer(msg)
 
 
@@ -761,7 +761,6 @@ async def topup_amount_entered(message: Message, state: FSMContext):
         await message.answer("❌ Введи сумму числом. Пример: 200")
         return
 
-    # минималка (чтобы не спамили 1 грн)
     if amt < decimal.Decimal("10.00"):
         await message.answer(f"❌ Минимум 10 {UAH}.")
         return
@@ -774,7 +773,7 @@ async def topup_amount_entered(message: Message, state: FSMContext):
 
     kb = inline_pay_and_check(payment_url, trade_id, label="💳 Оплатить пополнение")
     await message.answer(
-        f"💳 Пополнение баланса на {amt:.2f} {UAH}\n\nПосле оплаты нажми «✅ Проверить оплату».",
+        f"💳 Пополнение баланса на {to_int_amount(amt)} {UAH}\n\nПосле оплаты нажми «✅ Проверить оплату».",
         reply_markup=kb
     )
     await state.clear()
@@ -820,13 +819,10 @@ async def cmd_addproduct(message: Message):
 
     raw = message.text.strip()
     try:
-        # Пример:
-        # /addproduct odesa | saint | Saint | 300 | https://t.me/... | описание
+        # /addproduct odesa | saint | Saint | 300 | https://... | desc
         parts = [p.strip() for p in raw[len("/addproduct"):].strip().split("|")]
         if len(parts) < 5:
-            await message.answer(
-                "Формат:\n/addproduct city | code | name | price | link | desc(опц.)"
-            )
+            await message.answer("Формат:\n/addproduct city | code | name | price | link | desc(опц.)")
             return
 
         city = parts[0].lower()
