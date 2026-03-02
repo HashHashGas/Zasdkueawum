@@ -67,13 +67,13 @@ MAIN_TEXT_TEMPLATE = """✋🏻 Здравствуй! Кавалер 🎩
 @CavalierShopBot
 
 💬Чат : 
-https://t.me/+HvuVKZkR2-03MzBi
+https://t.me/+lsgvuPdI01U0M2My
 
 🥇Отзывы :
-https://t.me/+HvuVKZkR2-03MzBi
+https://t.me/+JW5Au3ZS4YM1MTli
 
 Оператор/Сапорт : 
-@gskalye
+@potterspotter 
 
 🏦Баланс : {balance} {uah}
 🛍️Количество заказов : {orders}
@@ -914,3 +914,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
