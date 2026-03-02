@@ -166,13 +166,11 @@ def normalize_code(raw: str) -> str:
 def parse_int_amount(text: str) -> int | None:
     try:
         s = (text or "").strip().replace(",", ".")
-        # допускаем "150.00", но приводим к int
         d = decimal.Decimal(s)
         if d <= 0:
             return None
-        d2 = d.quantize(decimal.Decimal("1"))  # целое
+        d2 = d.quantize(decimal.Decimal("1"))
         if d2 != d:
-            # если ввели 150.5 — не принимаем
             return None
         return int(d2)
     except Exception:
@@ -180,7 +178,6 @@ def parse_int_amount(text: str) -> int | None:
 
 
 def price_to_int_uah(price: decimal.Decimal) -> int | None:
-    # цена товара должна быть целой для H2H (amount int по доке)
     p = price.quantize(decimal.Decimal("0.01"))
     if p != p.quantize(decimal.Decimal("1.00")):
         return None
@@ -192,7 +189,6 @@ async def db_init() -> None:
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
 
     async with pool.acquire() as con:
-        # --- base tables ---
         await con.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -223,7 +219,7 @@ async def db_init() -> None:
         )
         """)
 
-        # ✅ MIGRATIONS for purchases (исправляет твой баг "product_code does not exist")
+        # MIGRATIONS purchases
         await con.execute("ALTER TABLE purchases ADD COLUMN IF NOT EXISTS product_code TEXT")
         await con.execute("ALTER TABLE purchases ADD COLUMN IF NOT EXISTS item_name TEXT NOT NULL DEFAULT ''")
         await con.execute("ALTER TABLE purchases ADD COLUMN IF NOT EXISTS price NUMERIC(12,2) NOT NULL DEFAULT 0")
@@ -249,13 +245,15 @@ async def db_init() -> None:
         )
         """)
 
-        # ✅ PAYMENTS table (H2H как на твоих скринах)
+        # ✅ invoices: делаем так, чтобы работало и со старыми схемами
+        # ВАЖНО: добавляем также колонку "amount" (как у тебя в БД) и держим её заполненной.
         await con.execute("""
         CREATE TABLE IF NOT EXISTS invoices (
             trade_id TEXT PRIMARY KEY,
             user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
             kind TEXT NOT NULL,                 -- 'topup' | 'product'
-            amount_int INT NOT NULL,            -- сумма в валюте (UAH) целая
+            amount_int INT NOT NULL DEFAULT 0,  -- целая сумма
+            amount INT NOT NULL DEFAULT 0,      -- совместимость со старым кодом/схемой (у тебя NOT NULL)
             currency TEXT NOT NULL DEFAULT 'UAH',
             product_code TEXT,
             card_number TEXT NOT NULL DEFAULT '',
@@ -264,12 +262,25 @@ async def db_init() -> None:
         )
         """)
 
-        # ✅ MIGRATIONS for invoices (исправляет твой баг "amount_int does not exist")
+        # MIGRATIONS invoices
         await con.execute("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS amount_int INT NOT NULL DEFAULT 0")
+        await con.execute("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS amount INT")  # может уже быть другого типа
         await con.execute("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS product_code TEXT")
         await con.execute("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS card_number TEXT NOT NULL DEFAULT ''")
         await con.execute("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'wait'")
         await con.execute("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'UAH'")
+
+        # ✅ КРИТИЧНО: если amount есть и он NULL — заполним из amount_int, чтобы убрать твой краш
+        # (Если amount уже NOT NULL - тогда NULL там быть не может, но на всякий случай)
+        await con.execute("UPDATE invoices SET amount = amount_int WHERE amount IS NULL")
+
+        # Попробуем поставить default/not null на amount (если тип позволяет) — если не позволит, бот всё равно будет писать amount при INSERT.
+        try:
+            await con.execute("ALTER TABLE invoices ALTER COLUMN amount SET DEFAULT 0")
+            await con.execute("ALTER TABLE invoices ALTER COLUMN amount SET NOT NULL")
+        except Exception:
+            # тип мог быть NUMERIC/TEXT — тогда просто оставляем, но мы при вставке будем всегда передавать amount
+            pass
 
 
 async def ensure_user(user_id: int) -> None:
@@ -453,7 +464,6 @@ async def buy_with_balance(user_id: int, product_code: str) -> tuple[bool, str]:
                 user_id, price
             )
 
-            # purchases schema-safe (колонки уже мигрированы)
             await con.execute(
                 """
                 INSERT INTO purchases(user_id, product_code, item_name, price, link)
@@ -467,18 +477,12 @@ async def buy_with_balance(user_id: int, product_code: str) -> tuple[bool, str]:
 
 # ================== PaySync H2H ==================
 async def paysync_h2h_create(amount_int: int, currency: str, data: str) -> dict:
-    """
-    H2H (как в документации): вернёт trade, card_number, status=wait и т.д.
-    Endpoint:
-      https://paysync.bot/api/client{client}/amount{amount}/currency{currency}?data=...
-    """
     data_q = quote(data or "")
     url = f"https://paysync.bot/api/client{CLIENT_ID}/amount{amount_int}/currency{currency}?data={data_q}"
     headers = {"Content-Type": "application/json", "apikey": PAYSYNC_APIKEY}
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, timeout=30) as resp:
-            # если api лёг — покажем текст ошибки
             try:
                 js = await resp.json()
             except Exception:
@@ -500,9 +504,6 @@ async def paysync_gettrans(trade_id: str) -> dict:
 
 
 async def invoice_create(user_id: int, kind: str, amount_int: int, product_code: str | None) -> asyncpg.Record:
-    """
-    Создаёт заявку через PaySync H2H, сохраняет в invoices, возвращает запись.
-    """
     await ensure_user(user_id)
 
     nonce = uuid.uuid4().hex[:10]
@@ -513,31 +514,31 @@ async def invoice_create(user_id: int, kind: str, amount_int: int, product_code:
     trade = js.get("trade")
     card_number = js.get("card_number") or ""
     status = (js.get("status") or "wait").lower()
-    amount = js.get("amount")  # обычно строка
     currency = js.get("currency") or PAYSYNC_CURRENCY
 
     if not trade:
         raise RuntimeError(f"PaySync create missing 'trade': {js}")
 
-    # иногда PaySync может вернуть amount строкой, но нам важно amount_int, который мы отправили
     trade_id = str(trade)
 
     assert pool is not None
     async with pool.acquire() as con:
+        # ✅ ВАЖНО: пишем И amount_int И amount — чтобы не падало на старой схеме
         await con.execute(
             """
-            INSERT INTO invoices(trade_id, user_id, kind, amount_int, currency, product_code, card_number, status)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+            INSERT INTO invoices(trade_id, user_id, kind, amount_int, amount, currency, product_code, card_number, status)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
             ON CONFLICT (trade_id) DO UPDATE SET
               user_id=EXCLUDED.user_id,
               kind=EXCLUDED.kind,
               amount_int=EXCLUDED.amount_int,
+              amount=EXCLUDED.amount,
               currency=EXCLUDED.currency,
               product_code=EXCLUDED.product_code,
               card_number=EXCLUDED.card_number,
               status=EXCLUDED.status
             """,
-            trade_id, user_id, kind, amount_int, str(currency), product_code, str(card_number), str(status)
+            trade_id, user_id, kind, amount_int, amount_int, str(currency), product_code, str(card_number), str(status)
         )
 
         inv = await con.fetchrow("SELECT * FROM invoices WHERE trade_id=$1", trade_id)
@@ -548,19 +549,14 @@ async def invoice_create(user_id: int, kind: str, amount_int: int, product_code:
 
 
 async def invoice_apply_paid(trade_id: str) -> tuple[bool, str]:
-    """
-    Проверяет gettrans. Если paid — применяет (topup/product) 1 раз.
-    """
     assert pool is not None
 
-    # 1) Статус PaySync
     js = await paysync_gettrans(trade_id)
     status = (js.get("status") or "").lower()
 
     if status != "paid":
         return False, "❌ Оплата ещё не подтверждена."
 
-    # 2) Инвойс из БД
     async with pool.acquire() as con:
         inv = await con.fetchrow("SELECT * FROM invoices WHERE trade_id=$1", trade_id)
 
@@ -734,7 +730,6 @@ async def cb_district(call: CallbackQuery):
     await call.message.answer(DISTRICT_TEXT, reply_markup=inline_pay_buttons(code))
 
 
-# ✅ Балансом — работает + выдаёт ссылку
 @dp.callback_query(F.data.startswith("pay:bal:"))
 async def cb_pay_balance(call: CallbackQuery):
     await call.answer()
@@ -747,7 +742,6 @@ async def cb_pay_balance(call: CallbackQuery):
     await call.message.answer(msg)
 
 
-# ✅ Картой (PaySync H2H) — как на твоих скринах (карта + заявка + “проверить оплату”)
 @dp.callback_query(F.data.startswith("pay:card:"))
 async def cb_pay_card(call: CallbackQuery):
     await call.answer()
@@ -773,7 +767,6 @@ async def cb_pay_card(call: CallbackQuery):
     await call.message.answer(render_h2h_message(inv), reply_markup=inline_check_only(str(inv["trade_id"])))
 
 
-# ✅ Проверить оплату (и для пополнения, и для товара)
 @dp.callback_query(F.data.startswith("check:"))
 async def cb_check(call: CallbackQuery):
     await call.answer()
@@ -786,7 +779,6 @@ async def cb_check(call: CallbackQuery):
     await call.message.answer(msg)
 
 
-# ================== PROFILE: TOPUP ==================
 @dp.callback_query(F.data == "profile:topup")
 async def cb_profile_topup(call: CallbackQuery, state: FSMContext):
     await call.answer()
@@ -815,7 +807,6 @@ async def topup_amount_entered(message: Message, state: FSMContext):
     await state.clear()
 
 
-# ================== PROFILE: PROMO / HISTORY ==================
 @dp.callback_query(F.data == "profile:promo")
 async def cb_profile_promo(call: CallbackQuery, state: FSMContext):
     await call.answer()
@@ -847,7 +838,6 @@ async def cb_profile_history(call: CallbackQuery):
     await call.message.answer(text)
 
 
-# ================== ADMIN COMMANDS ==================
 @dp.message(F.text.startswith("/addproduct"))
 async def cmd_addproduct(message: Message):
     if not is_admin(message.from_user.id):
@@ -855,8 +845,6 @@ async def cmd_addproduct(message: Message):
 
     raw = message.text.strip()
     try:
-        # Пример:
-        # /addproduct odesa | saint | Saint | 300 | https://t.me/... | описание
         parts = [p.strip() for p in raw[len("/addproduct"):].strip().split("|")]
         if len(parts) < 5:
             await message.answer("Формат:\n/addproduct city | code | name | price | link | desc(опц.)")
