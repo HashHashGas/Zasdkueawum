@@ -78,7 +78,7 @@ WORK_TEXT = "X"  # заменишь сам
 
 
 # Тексты для твоего сценария “товар -> район -> оплата”
-ITEM_TEXT_TEMPLATE = """✅ Вы выбрали: {title}
+ITEM_TEXT_TEMPLATE = """✅ Вы выбрали: {name}
 
 Цена: {price} {uah}
 
@@ -167,7 +167,7 @@ async def db_init() -> None:
         CREATE TABLE IF NOT EXISTS products (
             code TEXT PRIMARY KEY,
             city TEXT NOT NULL,
-            title TEXT NOT NULL,
+            name TEXT NOT NULL,
             price NUMERIC(12,2) NOT NULL DEFAULT 0,
             link TEXT NOT NULL DEFAULT '',
             description TEXT NOT NULL DEFAULT '',
@@ -241,7 +241,7 @@ async def get_city_products(city: str, limit: int = 20) -> list[asyncpg.Record]:
     async with pool.acquire() as con:
         rows = await con.fetch(
             """
-            SELECT code, title, price
+            SELECT code, name, price
             FROM products
             WHERE city=$1 AND is_active=TRUE
             ORDER BY created_at DESC
@@ -257,10 +257,10 @@ def inline_city_products(rows: list[asyncpg.Record], city: str) -> InlineKeyboar
         return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Нет товаров", callback_data="noop")]])
     kb = []
     for r in rows:
-        title = str(r["title"])
+        name = str(r["name"])
         code = str(r["code"])
         price = decimal.Decimal(r["price"])
-        kb.append([InlineKeyboardButton(text=f"{title} — {price:.2f} {UAH}", callback_data=f"prod:{city}:{code}")])
+        kb.append([InlineKeyboardButton(text=f"{name} — {price:.2f} {UAH}", callback_data=f"prod:{city}:{code}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
@@ -268,28 +268,28 @@ async def get_product(code: str) -> asyncpg.Record | None:
     assert pool is not None
     async with pool.acquire() as con:
         row = await con.fetchrow(
-            "SELECT code, city, title, price, link, description, is_active FROM products WHERE code=$1",
+            "SELECT code, city, name, price, link, description, is_active FROM products WHERE code=$1",
             code
         )
     return row
 
 
-async def add_or_update_product(city: str, code: str, title: str, price: decimal.Decimal, link: str, desc: str) -> None:
+async def add_or_update_product(city: str, code: str, name: str, price: decimal.Decimal, link: str, desc: str) -> None:
     assert pool is not None
     async with pool.acquire() as con:
         await con.execute(
             """
-            INSERT INTO products(code, city, title, price, link, description, is_active)
+            INSERT INTO products(code, city, name, price, link, description, is_active)
             VALUES($1,$2,$3,$4,$5,$6,TRUE)
             ON CONFLICT (code) DO UPDATE SET
                 city=EXCLUDED.city,
-                title=EXCLUDED.title,
+                name=EXCLUDED.name,
                 price=EXCLUDED.price,
                 link=EXCLUDED.link,
                 description=EXCLUDED.description,
                 is_active=TRUE
             """,
-            code, city, title, price, link, desc
+            code, city, name, price, link, desc
         )
 
 
@@ -371,7 +371,7 @@ async def buy_with_balance(user_id: int, product_code: str) -> tuple[bool, str]:
         return False, "❌ Товар недоступен."
 
     price = decimal.Decimal(product["price"])
-    title = str(product["title"])
+    name = str(product["name"])
     link = str(product["link"] or "")
     if not link.strip():
         return False, "❌ Для этого товара ещё не добавлена ссылка."
@@ -396,10 +396,10 @@ async def buy_with_balance(user_id: int, product_code: str) -> tuple[bool, str]:
                 INSERT INTO purchases(user_id, product_code, item_name, price, link)
                 VALUES($1,$2,$3,$4,$5)
                 """,
-                user_id, product_code, title, price, link
+                user_id, product_code, name, price, link
             )
 
-    return True, f"✅ Покупка успешна: {title}\nСписано: {price:.2f} {UAH}\n\n🔗 Твоя ссылка:\n{link}"
+    return True, f"✅ Покупка успешна: {name}\nСписано: {price:.2f} {UAH}\n\n🔗 Твоя ссылка:\n{link}"
 
 
 dp = Dispatcher(storage=MemoryStorage())
@@ -465,13 +465,13 @@ async def cb_product(call: CallbackQuery):
         await call.message.answer("❌ Товар недоступен.")
         return
 
-    title = str(product["title"])
+    name = str(product["name"])
     price = decimal.Decimal(product["price"])
     desc = str(product["description"] or "").strip()
     if not desc:
         desc = " "  # чтобы шаблон не ломался
 
-    text = ITEM_TEXT_TEMPLATE.format(title=title, price=f"{price:.2f}", uah=UAH, desc=desc)
+    text = ITEM_TEXT_TEMPLATE.format(name=name, price=f"{price:.2f}", uah=UAH, desc=desc)
     await call.message.answer(text, reply_markup=inline_one_button("Район", f"district:{code}"))
 
 
@@ -542,20 +542,20 @@ async def cmd_addproduct(message: Message):
 
     raw = message.text.strip()
     try:
-        # формат: /addproduct city CODE | title | price | link | desc
+        # формат: /addproduct city CODE | name | price | link | desc
         # чтобы тебе было просто: делаем формат через |
         # Пример:
         # /addproduct odesa | saint | Saint | 300 | https://t.me/... | описание
         parts = [p.strip() for p in raw[len("/addproduct"):].strip().split("|")]
         if len(parts) < 5:
             await message.answer(
-                "Формат:\n/addproduct city | code | title | price | link | desc(опц.)"
+                "Формат:\n/addproduct city | code | name | price | link | desc(опц.)"
             )
             return
 
         city = parts[0].lower()
         code = parts[1]
-        title = parts[2]
+        name = parts[2]
         price = decimal.Decimal(parts[3].replace(",", "."))
         link = parts[4]
         desc = parts[5] if len(parts) >= 6 else ""
@@ -564,8 +564,8 @@ async def cmd_addproduct(message: Message):
             await message.answer("❌ code пустой.")
             return
 
-        await add_or_update_product(city, code, title, price, link, desc)
-        await message.answer(f"✅ Товар сохранён: {code} ({title}) — {price:.2f} {UAH}")
+        await add_or_update_product(city, code, name, price, link, desc)
+        await message.answer(f"✅ Товар сохранён: {code} ({name}) — {price:.2f} {UAH}")
 
     except Exception as e:
         await message.answer(f"❌ Ошибка формата: {e}")
@@ -591,14 +591,14 @@ async def cmd_products(message: Message):
     assert pool is not None
     async with pool.acquire() as con:
         rows = await con.fetch(
-            "SELECT city, code, title, price, is_active FROM products ORDER BY created_at DESC LIMIT 50"
+            "SELECT city, code, name, price, is_active FROM products ORDER BY created_at DESC LIMIT 50"
         )
     if not rows:
         await message.answer("Товаров нет.")
         return
     text = "Товары:\n\n"
     for r in rows:
-        text += f"{r['city']} | {r['code']} | {r['title']} | {decimal.Decimal(r['price']):.2f} {UAH} | {'ON' if r['is_active'] else 'OFF'}\n"
+        text += f"{r['city']} | {r['code']} | {r['name']} | {decimal.Decimal(r['price']):.2f} {UAH} | {'ON' if r['is_active'] else 'OFF'}\n"
     await message.answer(text)
 
 
@@ -611,3 +611,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
